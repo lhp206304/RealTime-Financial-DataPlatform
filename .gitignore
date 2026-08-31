@@ -1,0 +1,29 @@
+# Go
+*.exe
+*.test
+*.out
+bin/
+vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# 环境/密钥
+.env
+*.local
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/settings.json
+
+# OS
+.DS_Store
+
+# 个人学习笔记 / 任务清单（不推送）
+docs/knowledge/
+docs/checklists/
