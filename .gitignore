@@ -27,3 +27,8 @@ venv/
 # 个人学习笔记 / 任务清单（不推送）
 docs/knowledge/
 docs/checklists/
+
+# 排查记录 / 本地依赖 / IDE（不推送）
+docs/troubleshooting/
+flink/lib/
+api/.vscode/

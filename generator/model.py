@@ -1,6 +1,7 @@
 import decimal
 import random
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 
@@ -17,6 +18,7 @@ class TransactionType(str, Enum):
     REFUND = "REFUND"
 
 class Transaction(BaseModel):
+    transaction_id: str
     amount: decimal.Decimal = Field(gt=0)
     currency: Currency
     customer_id: str
@@ -38,15 +40,20 @@ def make_transaction(base_time: datetime | None = None) -> Transaction:
     # 金额：10.00 ~ 9999.99，保留两位小数。用 Decimal，钱不用 float
     amount = decimal.Decimal(str(round(random.uniform(10, 9999.99), 2)))
 
+    # 在基准上随机往前拨 0~5 秒 → 偶尔比上一条早，形成乱序
+    # 截到毫秒（3 位）：Flink json ISO-8601 只认到毫秒，6 位微秒会解析失败
+    event_time = base_time - timedelta(seconds=random.uniform(0, 5))
+    event_time = event_time.replace(microsecond=event_time.microsecond // 1000 * 1000)
+
     return Transaction(
+        transaction_id=f"T{uuid.uuid4().hex[:16]}",
         amount=amount,
         currency=random.choice(list(Currency)),
         customer_id=f"C{random.randint(10000, 99999)}",
         account_id=f"A{random.randint(10000, 99999)}",
         merchant_id=f"M{random.randint(10000, 99999)}",
         transaction_type=random.choice(list(TransactionType)),
-        # 在基准上随机往前拨 0~5 秒 → 偶尔比上一条早，形成乱序
-        event_time=base_time - timedelta(seconds=random.uniform(0, 5)),
+        event_time=event_time,
     )
 
 

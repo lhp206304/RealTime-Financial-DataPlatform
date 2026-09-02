@@ -68,5 +68,4 @@ Go 不进入主链路，而是在链路跑通后，用 Go **重写 generator 和
 
 ## Cloud 选型
 
-原文档因 AWS 支付验证问题选 **Cloudflare R2**（S3 兼容，后续可平滑迁 AWS S3）。
-V1 不涉及 Cloud，留待 V6。
+待定

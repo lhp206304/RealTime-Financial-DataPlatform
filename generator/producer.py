@@ -1,6 +1,5 @@
 """Kafka Producer 封装：只管「怎么把一条消息发出去」。"""
 
-from email import message
 import logging
 
 from confluent_kafka import Producer, KafkaError, Message

@@ -67,10 +67,9 @@ StarRocks → Go API          （连接池 + context 超时 + 优雅关闭）
 
 ---
 
-## 简历技术栈（最终，控制范围）
+## 技术栈（最终，控制范围）
 
 核心标签：**Python / SQL / Kafka / Flink / Spark / PySpark / StarRocks / FastAPI / Docker / Cloud**
 
 Go 作为**可选加分标签**（做完 V7 再加）。
 
-> 简历里不要全堆上，突出核心链路即可。
