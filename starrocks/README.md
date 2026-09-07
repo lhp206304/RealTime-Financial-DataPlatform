@@ -24,9 +24,9 @@ Flink 通过 StarRocks Connector（JDBC + Stream Load）写入：Sink 表在 Fli
 建表（首次部署或表结构变更时执行）：
 
 ```bash
-# 逐个执行 ddl/ 下的脚本（FE MySQL 协议端口 9030）
-mysql -h 127.0.0.1 -P 9030 -u root < ddl/dws_realtime_agg.sql
-mysql -h 127.0.0.1 -P 9030 -u root < ddl/late_transaction.sql
+# 逐个执行 ddl/ 下的脚本（用 allin1 镜像自带的 mysql 客户端，免装；FE 9030）
+docker exec -i starrocks mysql -h 127.0.0.1 -P 9030 -u root < ddl/dws_realtime_agg.sql
+docker exec -i starrocks mysql -h 127.0.0.1 -P 9030 -u root < ddl/late_transaction.sql
 ```
 
 ---
