@@ -37,7 +37,7 @@ def list_transactions(
           currency,
           transaction_type
     FROM
-        finance.dwd_transaction"""
+        finance.dwd_transaction_online"""
     if customer_id:
         sql_str += " WHERE customer_id = :customer_id"
     sql_str += """ ORDER BY

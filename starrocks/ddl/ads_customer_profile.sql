@@ -21,7 +21,10 @@ CREATE TABLE IF NOT EXISTS finance.ads_customer_profile (
     refund_txn_rate   DOUBLE          NOT NULL  COMMENT "当天退款笔数占比 refund_count/txn_count",
     pay_amount_ratio  DOUBLE          NOT NULL  COMMENT "支付金额占比 pay_amount/total_amount（无支付按 0）",
     has_refund        BOOLEAN         NOT NULL  COMMENT "当天是否发生过退款",
-    amount_tier       VARCHAR(8)      NOT NULL  COMMENT "当天价值分层：HIGH≥1万 / MID≥1千 / LOW"
+    amount_tier       VARCHAR(8)      NOT NULL  COMMENT "当天价值分层：HIGH≥1万 / MID≥1千 / LOW",
+    ma7_total_amount  DECIMAL(18, 2)   NULL  COMMENT "7 日移动平均交易总额",
+    ma7_txn_count     BIGINT           NULL  COMMENT "7 日移动平均交易笔数",
+    dod_amount_change  DECIMAL(18, 2)   NULL  COMMENT "日环比交易总额（昨天）",
 )
 PRIMARY KEY (dt, customer_id)
 PARTITION BY date_trunc('day', dt)

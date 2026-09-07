@@ -8,7 +8,11 @@
 
 -- 并行度：<= topic 分区数，避免空转 subtask
 SET 'parallelism.default' = '3';
+SET 'pipeline.name' = 'Job1-Kafka到StarRocks-清洗打宽';
 SET 'table.exec.source.idle-timeout' = '30s';
+SET 'execution.checkpointing.interval' = '10s';
+SET 'execution.checkpointing.mode' = 'AT_LEAST_ONCE';
+SET 'execution.checkpointing.timeout' = '60s';
 
 -- ------------------------------------------------------------
 -- ① Kafka Source 表（字段对齐 Transaction 的 JSON）

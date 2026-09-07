@@ -62,11 +62,25 @@ services:
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: jobmanager
+        # ---- 状态后端 + Checkpoint ----
+        state.backend: rocksdb
+        state.checkpoints.dir: s3a://finance-checkpoints/flink
+        execution.checkpointing.interval: 10s
+        execution.checkpointing.mode: AT_LEAST_ONCE
+        execution.checkpointing.timeout: 60s
+        execution.checkpointing.min-pause: 5s
+        execution.checkpointing.tolerable-failed-checkpoints: 3
+        # ---- S3 连接 MinIO ----
+        s3.endpoint: http://minio:9000
+        s3.access-key: minioadmin
+        s3.secret-key: minioadmin
+        s3.path.style.access: true
     volumes:
       # 单文件挂载：往原生 lib 里塞 connector jar，不覆盖整个目录
       - ../flink/lib/flink-sql-connector-kafka-3.4.0-1.20.jar:/opt/flink/lib/flink-sql-connector-kafka-3.4.0-1.20.jar
       - ../flink/lib/flink-connector-starrocks-1.2.14_flink-1.20.jar:/opt/flink/lib/flink-connector-starrocks-1.2.14_flink-1.20.jar
       - ../flink/lib/flink-udf-1.0.jar:/opt/flink/lib/flink-udf-1.0.jar # ← 新增这行
+      - ../flink/lib/flink-s3-fs-hadoop-1.20.0.jar:/opt/flink/lib/flink-s3-fs-hadoop-1.20.0.jar
       - ../flink/sql:/opt/flink/sql
   taskmanager:
     image: flink:1.20-java17
@@ -77,11 +91,25 @@ services:
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: jobmanager
-        taskmanager.numberOfTaskSlots: 4
+        taskmanager.numberOfTaskSlots: 10
+        # ---- 状态后端 + Checkpoint ----
+        state.backend: rocksdb
+        state.checkpoints.dir: s3a://finance-checkpoints/flink
+        execution.checkpointing.interval: 10s
+        execution.checkpointing.mode: AT_LEAST_ONCE
+        execution.checkpointing.timeout: 60s
+        execution.checkpointing.min-pause: 5s
+        execution.checkpointing.tolerable-failed-checkpoints: 3
+        # ---- S3 连接 MinIO ----
+        s3.endpoint: http://minio:9000
+        s3.access-key: minioadmin
+        s3.secret-key: minioadmin
+        s3.path.style.access: true
     volumes:
       # 单文件挂载：往原生 lib 里塞 connector jar，不覆盖整个目录
       - ../flink/lib/flink-sql-connector-kafka-3.4.0-1.20.jar:/opt/flink/lib/flink-sql-connector-kafka-3.4.0-1.20.jar
       - ../flink/lib/flink-connector-starrocks-1.2.14_flink-1.20.jar:/opt/flink/lib/flink-connector-starrocks-1.2.14_flink-1.20.jar
+      - ../flink/lib/flink-s3-fs-hadoop-1.20.0.jar:/opt/flink/lib/flink-s3-fs-hadoop-1.20.0.jar
       - ../flink/lib/flink-udf-1.0.jar:/opt/flink/lib/flink-udf-1.0.jar # ← 新增这行
   minio:
     image: minio/minio:latest

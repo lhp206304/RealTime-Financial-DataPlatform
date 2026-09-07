@@ -14,6 +14,8 @@ from pyspark.sql.functions import col, coalesce, lit, round, when
 from src.io.starrocks_reader import read_from_starrocks
 from src.io.starrocks_writer import overwrite_partition_to_starrocks
 from src.spark import get_spark_session
+from pyspark.sql.window import Window
+
 
 SOURCE_TABLE = "dws_customer_daily"
 TARGET_TABLE = "ads_customer_profile"
@@ -23,6 +25,8 @@ TARGET_TABLE = "ads_customer_profile"
 
 def build(dws: DataFrame) -> DataFrame:
     """客户当天画像：派生成品指标（下游直接展示）+ 行为打标 + 价值分层。"""
+    w_7d = Window.partitionBy("customer_id").orderBy("dt").rowsBetween(-6, 0)
+
     return (dws
         # ── 透传当天核心指标（DWS 已算好的，直接带过来）──
         .select(
@@ -45,6 +49,11 @@ def build(dws: DataFrame) -> DataFrame:
                     when(col("total_amount") >= 10000, "HIGH")       # 高价值
                     .when(col("total_amount") >= 1000, "MID")        # 中价值
                     .otherwise("LOW"))                               # 普通
+        # 7 日移动平均
+        .withColumn("ma7_total_amount", avg("total_amount").over(w_7d))
+        .withColumn("ma7_txn_count", avg("txn_count").over(w_7d))
+        # 日环比（lag 取昨天）
+        .withColumn("dod_amount_change", col("total_amount") - lag("total_amount", 1).over(w_7d))
     )
 
 
@@ -54,8 +63,8 @@ def run(dt: str) -> None:
     """读 DWS 当天分区 → 当天客户画像 → 写当天 dt 分区。"""
     spark = get_spark_session(app_name=f"ads_customer_profile_{dt}")
 
-    dws = read_from_starrocks(spark, SOURCE_TABLE, dt)   # 只读当天分区（当天画像口径）
-    ads = build(dws)
+    dws = read_from_starrocks(spark, SOURCE_TABLE, dt, days=7)   # 读最近 7 天数据（客户日汇总）
+    ads = build(dws).filter(col("dt") == dt)
 
     overwrite_partition_to_starrocks(spark, ads, TARGET_TABLE, dt)
 

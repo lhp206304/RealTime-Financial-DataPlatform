@@ -8,7 +8,7 @@ from pyspark.sql import DataFrame, SparkSession
 from config.settings import settings
 
 
-def read_from_starrocks(spark: SparkSession, table: str,dt:str|None=None) -> DataFrame:
+def read_from_starrocks(spark: SparkSession, table: str,dt:str|None=None , days:int=1) -> DataFrame:
     """读 StarRocks 表回 DataFrame。
 
     table: 表名，如 'dwd_transaction_offline'
@@ -27,5 +27,9 @@ def read_from_starrocks(spark: SparkSession, table: str,dt:str|None=None) -> Dat
     # 用 filter.query 传 WHERE 条件，不用 starrocks.partition：
     # 后者要填 StarRocks 分区名，date_trunc 表达式分区的名字是自动生成的 p20260904，不是 dt=...
     if dt:
-        reader = reader.option("starrocks.filter.query", f"dt = '{dt}'")
+        if days <= 1:
+            reader = reader.option("starrocks.filter.query", f"dt = '{dt}'")
+        else:
+            start = (datetime.strptime(dt, "%Y-%m-%d") - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+            reader = reader.option("starrocks.filter.query", f"dt >= '{start}' AND dt <= '{dt}'")
     return reader.load()

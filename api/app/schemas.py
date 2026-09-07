@@ -27,3 +27,25 @@ class CustomerStat(BaseModel):
     amount_sum: Decimal
     transaction_count: int
     transaction_type: str
+
+
+class CustomerProfile(BaseModel):
+    """客户离线画像（来自 ads_customer_profile，T+1 快照）。"""
+    dt: datetime
+    customer_id: str
+    txn_count: int
+    total_amount: Decimal
+    avg_ticket_amount: float
+    refund_txn_rate: float
+    has_refund: bool
+    amount_tier: str
+    ma7_total_amount: Decimal | None = None
+    ma7_txn_count: int | None = None
+    dod_amount_change: Decimal | None = None
+
+
+class CustomerFullProfile(BaseModel):
+    """客户全量画像：实时统计 + 离线画像（流批汇聚）。"""
+    customer_id: str
+    realtime_stats: list[CustomerStat]    # 来自 dwd_transaction_online（实时链路）
+    offline_profile: CustomerProfile | None  # 来自 ads_customer_profile（离线链路，T+1）
