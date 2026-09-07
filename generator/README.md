@@ -78,12 +78,12 @@ python send_realtime.py
 
 ---
 
-## 知识点（面试要能讲清楚）
+## 设计要点
 
-| 主题 | 要能回答 |
+| 主题 | 说明 |
 |---|---|
-| Partition | 为什么 key 选 customer_id？怎么保证同一用户消息有序？ |
-| Delivery Semantics | acks=all + retries 换来什么？at-least-once 的代价？ |
-| Pydantic | 为什么入 Kafka 前做 Schema 校验？校验失败怎么办？ |
-| 乱序与 Watermark | 为什么造 0~5 秒乱序？Watermark 设多了/少了会怎样？ |
-| MinIO 追加写 | put_object 是覆盖写，追加为什么要「读旧 + concat + 写回」？ |
+| Partition | Producer key 选 `customer_id`：同一客户的消息进同一分区，Flink keyBy 后单客户事件保序 |
+| Delivery Semantics | `acks=all`（ISR 全部确认）+ `retries=5` 保证金融数据可靠投递；语义是 at-least-once，重复由下游 StarRocks 主键 upsert 幂等兜底 |
+| Pydantic | 入 Kafka 前做 Schema 校验（金额/枚举/ID 完整性），脏数据在源头拦下，不进流 |
+| 乱序与 Watermark | realtime 模式造 0~5 秒乱序，对应 Flink `WATERMARK ... - INTERVAL '5' SECOND` 的容忍窗口；超过窗口的迟到数据进 late 表 |
+| MinIO 追加写 | `put_object` 是整对象覆盖写，追加历史数据采用「读旧 Parquet → concat 合并 → 整体写回」 |

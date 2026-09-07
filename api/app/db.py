@@ -1,17 +1,22 @@
-"""StarRocks 连接层（MySQL 协议）。
+"""查询层：双数据源。
 
-设计要点：
-- StarRocks 兼容 MySQL 协议 → 用 PyMySQL 驱动 + SQLAlchemy 连接池。
-- 连接池：进程内复用连接，避免每次请求都握手（贵）。
-- 查询超时：慢查询不能拖垮整个服务。
+- StarRocks（MySQL 协议 / SQLAlchemy + PyMySQL 连接池）：
+    实时链路表（Flink 写入，如 dwd_transaction_online）→ run_query()
+- ClickHouse（HTTP 协议 / clickhouse-connect）：
+    离线链路表（PySpark T+1 写入，如 ads_customer_profile）→ run_query_clickhouse()
+
+V3 迁移说明：离线层从 StarRocks 换到 ClickHouse，但实时层仍在 StarRocks，
+所以两套查询入口并存；routers 按表的数据来源选对应函数。
 """
 
 import os
+import re
 
+import clickhouse_connect
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-# ---- 连接配置（从环境变量读，给本地默认值）----
+# ---- StarRocks 连接配置（实时链路）----
 # 宿主机跑 API 用 localhost；如果 API 也进容器，改成 service 名 starrocks
 DB_HOST = os.getenv("STARROCKS_HOST", "localhost")
 DB_PORT = int(os.getenv("STARROCKS_PORT", "9030"))
@@ -22,9 +27,19 @@ DB_NAME = os.getenv("STARROCKS_DB", "finance")
 # 查询超时（秒）：单条 SQL 跑太久就掐断
 QUERY_TIMEOUT = int(os.getenv("STARROCKS_QUERY_TIMEOUT", "5"))
 
+# ---- ClickHouse 连接配置（离线链路）----
+CH_HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
+CH_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))   # HTTP 端口
+CH_USER = os.getenv("CLICKHOUSE_USER", "default")
+CH_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "")
+CH_NAME = os.getenv("CLICKHOUSE_DB", "finance")
+CH_QUERY_TIMEOUT = int(os.getenv("CLICKHOUSE_QUERY_TIMEOUT", "5"))
+
 
 # 模块级单例：整个进程共用一个 engine（内含连接池）
 _engine: Engine | None = None
+# ClickHouse 客户端单例（HTTP 连接轻量，不需要连接池）
+_ch_client: clickhouse_connect.driver.client.Client | None = None
 
 
 def _build_url() -> str:
@@ -38,7 +53,7 @@ def _build_url() -> str:
 def init_engine() -> Engine:
     """创建 engine + 连接池。在 FastAPI 启动事件里调用一次。
 
-    连接池参数（面试要能讲）：
+    连接池参数：
     - pool_size：常驻连接数
     - max_overflow：高峰额外可借的连接数
     - pool_recycle：连接多久回收一次，防被 StarRocks 端断掉的死连接
@@ -79,17 +94,50 @@ def dispose_engine() -> None:
 
 
 def run_query(sql: str, params: dict | None = None) -> list[dict]:
-    """执行只读查询，返回 list[dict]（每行一个 dict）。
+    """执行只读查询（StarRocks，实时链路表），返回 list[dict]（每行一个 dict）。
 
     路由里这样用：run_query("SELECT ... WHERE customer_id=:cid", {"cid": cid})
     注意：用命名参数 :name 防 SQL 注入，不要手动拼字符串。
-
-    TODO(你写)：
-      1. get_engine().connect() 拿连接（with 语句自动归还池子）
-      2. conn.execute(text(sql), params or {})
-      3. result.mappings().all() → 转成 list[dict] 返回
     """
     # init_engine()
     with get_engine().connect() as conn:
         result = conn.execute(text(sql), params or {})
         return result.mappings().all()
+
+
+# ==================== ClickHouse（离线链路表）====================
+
+
+def get_clickhouse_client() -> clickhouse_connect.driver.client.Client:
+    """拿 ClickHouse 客户端（懒加载单例，首次调用时创建）。"""
+    global _ch_client
+    if _ch_client is None:
+        _ch_client = clickhouse_connect.get_client(
+            host=CH_HOST,
+            port=CH_PORT,
+            username=CH_USER,
+            password=CH_PASSWORD,
+            database=CH_NAME,
+            query_timeout=CH_QUERY_TIMEOUT,
+        )
+    return _ch_client
+
+
+def _convert_placeholders(sql: str) -> str:
+    """SQLAlchemy 风格 :name 占位符 → clickhouse-connect 风格 %(name)s。
+
+    这样 routers 里的 SQL 不用改写法，StarRocks / ClickHouse 两边通用。
+    """
+    return re.sub(r":(\w+)", r"%(\1)s", sql)
+
+
+def run_query_clickhouse(sql: str, params: dict | None = None) -> list[dict]:
+    """执行只读查询（ClickHouse，离线链路表），返回 list[dict]（每行一个 dict）。
+
+    用法和 run_query 完全一致（:name 占位符），内部自动转换参数风格。
+    查离线表用这个：ads_customer_profile / dws_* 等 PySpark T+1 写入的表。
+    """
+    if params:
+        sql = _convert_placeholders(sql)
+    result = get_clickhouse_client().query(sql, params)
+    return [dict(zip(result.column_names, row)) for row in result.result_rows]

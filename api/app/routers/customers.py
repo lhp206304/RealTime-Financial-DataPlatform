@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Path
 
 from app.schemas import CustomerFullProfile, CustomerProfile, CustomerStat
-from app.db import run_query
+from app.db import run_query, run_query_clickhouse
 
 
 router = APIRouter()
@@ -25,7 +25,7 @@ def get_customer_full_profile(
     """
     realtime_rows = run_query(realtime_sql, {"customer_id": customer_id})
 
-    # ② 离线：最近一天的客户画像（来自 PySpark T+1 写入的表）
+    # ② 离线：最近一天的客户画像（PySpark T+1 写入 ClickHouse，V3 起离线层在 ClickHouse）
     offline_sql = """
     select
         dt, customer_id, txn_count, total_amount,
@@ -36,7 +36,7 @@ def get_customer_full_profile(
     order by dt desc
     limit 1
     """
-    offline_rows = run_query(offline_sql, {"customer_id": customer_id})
+    offline_rows = run_query_clickhouse(offline_sql, {"customer_id": customer_id})
 
     return CustomerFullProfile(
         customer_id=customer_id,

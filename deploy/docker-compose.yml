@@ -133,9 +133,23 @@ services:
       - "6379:6379" # 维表缓存：批 T+1 同步写，Flink Lookup Join 读
     volumes:
       - redis_data:/data
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    hostname: clickhouse
+    container_name: clickhouse
+    ports:
+      - "8123:8123" # HTTP 接口（clickhouse-connect Python 客户端用这个）
+      - "9002:9000" # 原生 TCP 接口（宿主机 9002，避免 MinIO 9000 冲突）
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
 
 volumes:
   kafka_data:
   starrocks_data:
   minio_data:
   redis_data:
+  clickhouse_data:

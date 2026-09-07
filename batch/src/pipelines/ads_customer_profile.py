@@ -1,6 +1,6 @@
-"""表任务：ADS 客户当天画像 → StarRocks ads_customer_profile。
+"""表任务：ADS 客户当天画像 → ClickHouse ads_customer_profile。
 
-职责：DWS 客户日汇总（当天分区）→ 派生成品指标 + 行为打标 + 价值分层 → 写 StarRocks。
+职责：DWS 客户日汇总（当天分区）→ 派生成品指标 + 行为打标 + 价值分层 → 写 ClickHouse。
 调度：python -m src.pipelines.ads_customer_profile 2026-09-04
 
 粒度说明：DWS 当天分区一行 = 一个客户（customer_id, dt 粒度），
@@ -9,10 +9,10 @@
 import sys
 
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, coalesce, lit, round, when
+from pyspark.sql.functions import avg, col, coalesce, lag, lit, round, when
 
-from src.io.starrocks_reader import read_from_starrocks
-from src.io.starrocks_writer import overwrite_partition_to_starrocks
+from src.io.clickhouse_reader import read_from_clickhouse
+from src.io.clickhouse_writer import overwrite_partition_to_clickhouse
 from src.spark import get_spark_session
 from pyspark.sql.window import Window
 
@@ -25,7 +25,10 @@ TARGET_TABLE = "ads_customer_profile"
 
 def build(dws: DataFrame) -> DataFrame:
     """客户当天画像：派生成品指标（下游直接展示）+ 行为打标 + 价值分层。"""
+    # 带 frame 的窗口：给 avg 用（滑动区间 = 前 6 行 + 当前行）
     w_7d = Window.partitionBy("customer_id").orderBy("dt").rowsBetween(-6, 0)
+    # 不带 frame 的窗口：给 lag 用（lag/lead 不允许指定 frame，只按分区排序取偏移行）
+    w_prev = Window.partitionBy("customer_id").orderBy("dt")
 
     return (dws
         # ── 透传当天核心指标（DWS 已算好的，直接带过来）──
@@ -53,7 +56,7 @@ def build(dws: DataFrame) -> DataFrame:
         .withColumn("ma7_total_amount", avg("total_amount").over(w_7d))
         .withColumn("ma7_txn_count", avg("txn_count").over(w_7d))
         # 日环比（lag 取昨天）
-        .withColumn("dod_amount_change", col("total_amount") - lag("total_amount", 1).over(w_7d))
+        .withColumn("dod_amount_change", col("total_amount") - lag("total_amount", 1).over(w_prev))
     )
 
 
@@ -63,10 +66,10 @@ def run(dt: str) -> None:
     """读 DWS 当天分区 → 当天客户画像 → 写当天 dt 分区。"""
     spark = get_spark_session(app_name=f"ads_customer_profile_{dt}")
 
-    dws = read_from_starrocks(spark, SOURCE_TABLE, dt, days=7)   # 读最近 7 天数据（客户日汇总）
+    dws = read_from_clickhouse(spark, SOURCE_TABLE, dt, days=7)   # 读最近 7 天数据（客户日汇总）
     ads = build(dws).filter(col("dt") == dt)
 
-    overwrite_partition_to_starrocks(spark, ads, TARGET_TABLE, dt)
+    overwrite_partition_to_clickhouse(spark, ads, TARGET_TABLE, dt)
 
     spark.stop()
     print(f"ADS 客户画像 {dt} 完成 → {TARGET_TABLE}")

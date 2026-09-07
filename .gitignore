@@ -33,6 +33,7 @@ docs/troubleshooting/
 docs/v3-lambda-roadmap.md
 flink/lib/
 api/.vscode/
+batch/jars/
 
 flink/udf/dependency-reduced-pom.xml
 

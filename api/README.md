@@ -1,8 +1,8 @@
 # api —— 查询服务 (FastAPI)
 
-从 StarRocks 查实时指标，对外提供 REST API。
+对外提供 REST API：StarRocks 查实时指标、ClickHouse 查离线指标。
 
-> Data Engineer 岗的事实标准：FastAPI + Pydantic，自带参数校验和 OpenAPI 文档（`/docs`）。
+> FastAPI + Pydantic，自带参数校验和 OpenAPI 文档（`/docs`）。
 
 ---
 
@@ -10,14 +10,12 @@
 
 ```text
 api/
-├── app/                # 包代码（你写）
+├── app/
 │   ├── __init__.py
-│   ├── main.py         # FastAPI 实例 + 路由挂载
-│   ├── routers/        # 各接口
-│   ├── db.py           # StarRocks 连接（MySQL 协议）
+│   ├── main.py         # FastAPI 实例 + 路由挂载 + 启动/关闭事件
+│   ├── routers/        # 各接口（transactions / customers）
+│   ├── db.py           # 双数据源：StarRocks（SQLAlchemy 连接池）+ ClickHouse
 │   └── schemas.py      # Pydantic 响应模型
-├── tests/              # pytest（你写）
-├── pyproject.toml
 └── README.md
 ```
 
@@ -87,41 +85,19 @@ curl http://localhost:8000/customers/C12050/full-profile
 | 依赖 | 状态 |
 |---|---|
 | StarRocks 容器在跑 | `docker ps` 看到 `starrocks` |
+| ClickHouse 容器在跑（离线画像） | `docker ps` 看到 `clickhouse` |
 | Flink Job1 在跑（实时明细） | Web UI `localhost:8081` 有 Running Job |
-| PySpark 离线链路跑过（离线画像） | `ads_customer_profile` 表有数据 |
+| PySpark 离线链路跑过（离线画像） | ClickHouse `ads_customer_profile` 表有数据 |
 
 ---
 
-## 你要实现的清单
+## 设计要点
 
-### `main.py`
-- [ ] 创建 FastAPI 实例，挂载 routers
-- [ ] 启动/关闭事件（建连接池、优雅关闭）
-
-### `db.py`
-- [ ] 连 StarRocks（MySQL 协议，用 `PyMySQL` / `SQLAlchemy`）
-- [ ] 连接池配置
-- [ ] 查询带超时
-
-### `routers/` + `schemas.py`
-- [ ] 各接口：路径/查询参数校验（Pydantic） → 查库 → 返回响应模型
-- [ ] 统一异常处理 + 日志
-
----
-
-## 要练/要能讲清楚的知识点
-
-| 主题 | 面试要能回答 |
+| 主题 | 说明 |
 |---|---|
-| Pydantic | 请求/响应校验怎么做？ |
-| async | FastAPI async 什么时候真正有用？ |
-| 连接池 | 池大小怎么定？连接泄漏怎么防？ |
-| 超时 | 慢查询怎么不拖垮服务？ |
-
----
-
-## 建议实现顺序
-
-1. 先 `/health` 跑通服务 + 看 `/docs`
-2. 再接 StarRocks 查一张表返回 JSON
-3. 最后补连接池 / 超时 / 异常处理 / 测试
+| 双数据源 | StarRocks 走 SQLAlchemy + PyMySQL 连接池查实时表（`run_query()`）；ClickHouse 走 clickhouse-connect HTTP 查离线表（`run_query_clickhouse()`）。路由按表的来源选入口，`db.py` 内部把 `:name` 占位符自动转成 `%(name)s`，两边 SQL 写法统一 |
+| 参数校验 | Pydantic 负责响应模型和 Query 参数（limit/customer_id）校验，非法参数在进路由前被拒 |
+| 连接池 | StarRocks 侧 `pool_size=5` + `max_overflow=5` 常驻复用连接；`pool_recycle=3600` 防服务端断连，`pool_pre_ping=True` 借出前 ping 掉死连接；启动事件初始化、关闭事件 dispose |
+| 超时 | 两条链路查询超时均 5 秒（PyMySQL `read_timeout` / clickhouse-connect `query_timeout`），慢查询不拖垮服务 |
+| async | 路由用 `async def`，但 DB 驱动是同步的，查询在线程池里执行（FastAPI 默认行为）；当前 QPS 下够用，避免引入异步驱动复杂度 |
+| SQL 注入 | 全部走命名参数绑定（`text(sql)` + params dict），不手工拼字符串 |

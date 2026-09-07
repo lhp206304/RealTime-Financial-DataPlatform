@@ -1,8 +1,8 @@
 
 
 from src.spark import get_spark_session
-from src.io.starrocks_reader import read_from_starrocks
-from src.io.starrocks_writer import overwrite_table_to_starrocks
+from src.io.clickhouse_reader import read_from_clickhouse
+from src.io.clickhouse_writer import overwrite_table_to_clickhouse
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col
 
@@ -22,13 +22,13 @@ def validate(df: DataFrame) -> DataFrame:
 def run(dt: str|None=None):
     #读取ods数据
     spark=get_spark_session(SESSION_NAME)
-    df_raw = read_from_starrocks(spark, SOURCE_TABLE)
+    df_raw = read_from_clickhouse(spark, SOURCE_TABLE)
     #第二步 清理
     df = clean(df_raw)
     #第三步 校验
     df = validate(df)
-    #第四步 写starrocks
-    overwrite_table_to_starrocks(spark, df, TARGET_TABLE)
+    #第四步 写clickhouse
+    overwrite_table_to_clickhouse(spark, df, TARGET_TABLE)
     print(f"DIM 完成：{df.count()} 条 → {TARGET_TABLE}")
     spark.stop()
 if __name__ == "__main__":

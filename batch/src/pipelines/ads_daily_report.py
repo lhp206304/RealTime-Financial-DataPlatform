@@ -1,6 +1,6 @@
-"""表任务：ADS 每日大盘报表 → StarRocks ads_daily_report。
+"""表任务：ADS 每日大盘报表 → ClickHouse ads_daily_report。
 
-职责：DWS 汇总 → 每日经营指标（基础上卷 + 派生比率 + 同环比 + 月累计）→ 写 StarRocks。
+职责：DWS 汇总 → 每日经营指标（基础上卷 + 派生比率 + 同环比 + 月累计）→ 写 ClickHouse。
 调度：python -m src.pipelines.ads_daily_report 2026-09-04
 
 注意：同环比/累计值需要多天数据，读 DWS 取「窗口最小依赖区间」[上月末, 当天]；
@@ -11,8 +11,8 @@ from datetime import date, timedelta
 
 from pyspark.sql import DataFrame
 from pyspark.sql import Window
-from src.io.starrocks_reader import read_from_starrocks
-from src.io.starrocks_writer import overwrite_partition_to_starrocks
+from src.io.clickhouse_reader import read_from_clickhouse
+from src.io.clickhouse_writer import overwrite_partition_to_clickhouse
 from src.spark import get_spark_session
 from pyspark.sql.functions import (
     col,
@@ -92,15 +92,15 @@ def run(dt: str) -> None:
     #   比「全历史」少读 90%+，比「只读当天」多 1 天的代价
     d = date.fromisoformat(dt)
     window_start = d.replace(day=1) - timedelta(days=1)     # 上月末一天
-    dws = read_from_starrocks(spark, SOURCE_TABLE).filter(
-        f"dt >= '{window_start}' and dt <= '{dt}'")
+    days_span = (d - window_start).days + 1                 # 区间天数（含两端）
+    dws = read_from_clickhouse(spark, SOURCE_TABLE, dt, days=days_span)
     ads_all = build(dws)
 
     # build 输出含区间内所有天的行；writer 只清当天分区，必须裁剪到当天再写，
     # 否则历史行被重复 append（主键模型 upsert 幂等但浪费写放大）
     ads_today = ads_all.filter(f"dt = '{dt}'")
 
-    overwrite_partition_to_starrocks(spark, ads_today, TARGET_TABLE, dt)
+    overwrite_partition_to_clickhouse(spark, ads_today, TARGET_TABLE, dt)
 
     spark.stop()
     print(f"ADS 每日大盘 {dt} 完成 → {TARGET_TABLE}")

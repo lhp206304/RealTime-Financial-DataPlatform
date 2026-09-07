@@ -1,6 +1,6 @@
-"""表任务：ODS 交易明细原样落地 → StarRocks ods_transaction。
+"""表任务：ODS 交易明细原样落地 → ClickHouse ods_transaction。
 
-职责：MinIO fact 桶原始交易 → 不加工（最多类型对齐）→ 写 StarRocks。
+职责：MinIO fact 桶原始交易 → 不加工（最多类型对齐）→ 写 ClickHouse。
 调度：python -m src.pipelines.ods_transaction 2026-09-04（不传日期 = 全量）
 """
 import sys
@@ -8,9 +8,9 @@ import sys
 from pyspark.sql import DataFrame
 
 from src.io.minio_reader import read_minio
-from src.io.starrocks_writer import (
-    overwrite_partition_to_starrocks,
-    overwrite_table_to_starrocks,
+from src.io.clickhouse_writer import (
+    overwrite_partition_to_clickhouse,
+    overwrite_table_to_clickhouse,
 )
 from src.quality import check_ods
 from src.spark import get_spark_session
@@ -39,9 +39,9 @@ def run(dt: str | None = None) -> None:
     ods = transform(raw)
     check_ods(raw_count, ods.count())
     if dt:
-        overwrite_partition_to_starrocks(spark, ods, TARGET_TABLE, dt)  # 日批：覆盖当天分区
+        overwrite_partition_to_clickhouse(spark, ods, TARGET_TABLE, dt)  # 日批：覆盖当天分区
     else:
-        overwrite_table_to_starrocks(spark, ods, TARGET_TABLE)         # 不传 dt：首次全量初始化
+        overwrite_table_to_clickhouse(spark, ods, TARGET_TABLE)         # 不传 dt：首次全量初始化
 
     spark.stop()
     print(f"ODS {dt or '全量'} 完成：{raw_count} 条 → {TARGET_TABLE}")

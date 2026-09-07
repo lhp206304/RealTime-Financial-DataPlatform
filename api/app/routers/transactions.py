@@ -18,13 +18,9 @@ def list_transactions(
     customer_id: str | None = None,   # 查询参数：/transactions?customer_id=C123（可选）
     limit: int = 20,                  # 查询参数：默认返回 20 条
 ) -> list[dict]:
-    """查交易明细，可按 customer_id 过滤，limit 限制条数。
+    """查实时交易明细（dwd_transaction_online），可按 customer_id 过滤，按 event_time 倒序。
 
-    TODO(你写)：
-      1. 写 SQL 查 finance.dwd_transaction，按 event_time 倒序，取最新的
-      2. 用命名参数 :customer_id / :limit，不要手动拼字符串（防 SQL 注入）
-      3. customer_id 为 None 时不加 WHERE 条件（查全部）
-      4. return run_query(sql, params)
+    用命名参数 :customer_id / :limit 防 SQL 注入；customer_id 为 None 时不加 WHERE。
     """
     sql_str = """
     SELECT

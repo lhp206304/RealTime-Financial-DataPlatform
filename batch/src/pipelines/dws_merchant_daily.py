@@ -1,6 +1,6 @@
-"""表任务：DWS 商户日汇总 → StarRocks dws_merchant_daily。
+"""表任务：DWS 商户日汇总 → ClickHouse dws_merchant_daily。
 
-职责：DWD 宽表 → 按 商户+天 聚合（笔数/金额/均额）→ 校验 → 写 StarRocks。
+职责：DWD 宽表 → 按 商户+天 聚合（笔数/金额/均额）→ 校验 → 写 ClickHouse。
 调度：python -m src.pipelines.dws_merchant_daily 2026-09-04
 """
 import sys
@@ -8,8 +8,8 @@ import sys
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import avg, count, countDistinct, max, sum,when,col,round
 
-from src.io.starrocks_reader import read_from_starrocks
-from src.io.starrocks_writer import overwrite_partition_to_starrocks
+from src.io.clickhouse_reader import read_from_clickhouse
+from src.io.clickhouse_writer import overwrite_partition_to_clickhouse
 from src.quality import check_dws
 from src.spark import get_spark_session
 
@@ -20,14 +20,7 @@ APP_NAME='dws_merchant_daily'
 # ============ 纯业务逻辑（不碰 IO，可单测）============
 
 def aggregate(dwd: DataFrame) -> DataFrame:
-    """groupBy(merchant_id, dt) → 交易笔数 / 总金额 / 平均金额。"""
-    # TODO 步骤 5：
-    # from pyspark.sql.functions import col, count, sum, avg
-    # return (dwd
-    #     .groupBy("merchant_id", "dt")       # dt 列由 ODS/DWD 继承（DATE 类型）
-    #     .agg(count("*").alias("txn_count"),
-    #          sum("amount").alias("total_amount"),
-    #          avg("amount").alias("avg_amount")))
+    """groupBy(merchant_id, dt) → 规模/交易类型/币种/风险指标 + 退款率。"""
     return (dwd
         .groupBy("merchant_id", "dt")       # dt 列由 ODS/DWD 继承（DATE 类型）
         .agg(
@@ -64,11 +57,11 @@ def run(dt: str) -> None:
     """读 DWD → 聚合 → 校验 → 写 dws_merchant_daily。"""
     spark = get_spark_session(app_name=f"{APP_NAME}_{dt}")
 
-    dwd = read_from_starrocks(spark, SOURCE_TABLE,dt)
+    dwd = read_from_clickhouse(spark, SOURCE_TABLE, dt)
     dws = aggregate(dwd)
 
     check_dws(dwd, dws)
-    overwrite_partition_to_starrocks(spark, dws, TARGET_TABLE, dt)
+    overwrite_partition_to_clickhouse(spark, dws, TARGET_TABLE, dt)
 
     spark.stop()
     print(f"DWS 商户日汇总 {dt} 完成 → {TARGET_TABLE}")

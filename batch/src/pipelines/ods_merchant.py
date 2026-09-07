@@ -1,6 +1,6 @@
-"""表任务：ODS 商户维度原样落地 → StarRocks dim_merchant。
+"""表任务：ODS 商户维度原样落地 → ClickHouse dim_merchant。
 
-职责：MinIO dim 桶 dim_merchant.parquet → 类型对齐 + 校验 → 写 StarRocks（整表覆盖）。
+职责：MinIO dim 桶 dim_merchant.parquet → 类型对齐 + 校验 → 写 ClickHouse（整表覆盖）。
 调度：python -m src.pipelines.ods_merchant
 """
 import sys
@@ -9,7 +9,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql.functions import col
 
 from src.io.minio_reader import read_minio
-from src.io.starrocks_writer import overwrite_table_to_starrocks
+from src.io.clickhouse_writer import overwrite_table_to_clickhouse
 from src.quality import check_ods
 from src.spark import get_spark_session
 
@@ -39,7 +39,7 @@ def run(dt: str | None = None) -> None:
     check(ods)
     check_ods(raw_count, ods.count())
 
-    overwrite_table_to_starrocks(spark, ods, TARGET_TABLE)   # 维表无分区：整表覆盖
+    overwrite_table_to_clickhouse(spark, ods, TARGET_TABLE)   # 维表无分区：整表覆盖
     spark.stop()
     print(f"ODS 商户维度完成：{raw_count} 条 → {TARGET_TABLE}")
 

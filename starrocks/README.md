@@ -1,47 +1,42 @@
-# starrocks —— OLAP 建表 + 数据导入
+# starrocks —— 实时链路 OLAP 建表
 
-作为核心分析存储（实时数仓 OLAP 层），承接 Flink 写入，供 API 查询。
+实时数仓 OLAP 层，承接 Flink 写入，供 API 查询实时指标。
+
+> 离线批链路（PySpark T+1）的表在 ClickHouse，DDL 见 [../clickhouse/ddl/](../clickhouse/ddl/)。
 
 ---
 
-## 数仓分层（沿用传统数仓经验）
+## 表清单（ddl/）
 
-```text
-Flink → ODS → DWD → DWS → ADS
+| DDL | 表 | 写入方 | 说明 |
+|---|---|---|---|
+| [dws_realtime_agg.sql](ddl/dws_realtime_agg.sql) | `finance.dws_realtime_agg` | Flink Job2（窗口聚合） | 客户维度实时聚合，Primary Key `(window_type, window_start, window_end, customer_id)`，TUMBLE/HOP 两种窗口结果 upsert 进同一张表 |
+| [late_transaction.sql](ddl/late_transaction.sql) | `finance.late_transaction` | Flink Job1（清洗） | 迟到交易明细（event_time < watermark），Duplicate Key 明细模型，按客户维度排查迟到原因 |
+
+实时明细表 `dwd_transaction_online` 由 Flink SQL 作业里的 Sink 连接器定义（见 [../flink/sql/kafka_to_starrocks.sql](../flink/sql/kafka_to_starrocks.sql)），不在本目录。
+
+---
+
+## 数据导入方式
+
+Flink 通过 StarRocks Connector（JDBC + Stream Load）写入：Sink 表在 Flink SQL 里声明 `'connector' = 'starrocks'`，主键模型表按主键 upsert，作业重跑/恢复不产生重复行。
+
+建表（首次部署或表结构变更时执行）：
+
+```bash
+# 逐个执行 ddl/ 下的脚本（FE MySQL 协议端口 9030）
+mysql -h 127.0.0.1 -P 9030 -u root < ddl/dws_realtime_agg.sql
+mysql -h 127.0.0.1 -P 9030 -u root < ddl/late_transaction.sql
 ```
 
-| 层 | V1 需要的表 | 说明 |
-|---|---|---|
-| DWD | `dwd_transaction` | 清洗后的交易明细 |
-| DWS | `dws_customer_transaction` | 客户维度聚合 |
-| ADS | `ads_realtime_transaction` | 实时大盘指标（给 API/BI） |
-
-> V1 先从 `dwd_transaction` + 一张 ADS 聚合表起步，跑通即可。
-
 ---
 
-## 你要实现的清单
+## 设计要点
 
-### `ddl/`
-- [ ] `dwd_transaction` 建表
-  - 选 **Key 模型**（Primary Key / Duplicate Key / Aggregate Key，想清楚为什么）
-  - 设计 **Partition**（按日期？）、**Bucket/Distribution**（按什么分桶？）、**Sort Key**
-- [ ] ADS 聚合表建表
-- [ ] （可选）Materialized View 优化查询
-
-### `load/`
-- [ ] 数据导入方式配置：**Stream Load** 或 **Routine Load**（直接消费 Kafka）
-- [ ] 说明选哪种、为什么
-
----
-
-## 要练/要能讲清楚的知识点（简历价值最高的部分）
-
-| 主题 | 面试要能回答 |
+| 主题 | 说明 |
 |---|---|
-| Key 模型 | 这张表为什么用 Primary Key / Aggregate Key？ |
-| 分桶 | 为什么这样分桶？分桶数怎么定？ |
-| Partition | 分区键怎么选？对查询和导入的影响？ |
-| Materialized View | 什么场景用 MV 加速？ |
-| Query Profile | 查询变慢怎么用 Query Profile 定位？ |
-| Routine Load | 和 Stream Load 的区别、各自适用场景？ |
+| Key 模型 | 两张表都用 Primary Key：Flink 持续 upsert 聚合结果/明细，按主键覆盖天然幂等；分区列必须进主键（如 `(window_type, window_start, window_end, customer_id)`） |
+| 分区 | `date_trunc('day', ...)` 表达式按天分区，与 Flink 微批/重跑周期对齐，查询按天裁剪 |
+| 分桶 | 聚合表按 `customer_id`、迟到明细按 `transaction_id` HASH 分桶，与高频查询的过滤/JOIN 键一致 |
+| 导入方式 | 走 Flink StarRocks Connector（底层 Stream Load），而不是 Routine Load 直接消费 Kafka：清洗、打宽、窗口聚合逻辑在 Flink 层，StarRocks 只接收成品结果 |
+| 物化视图 | 未使用 MV：聚合在 Flink 层预计算完成，StarRocks 侧只做点查和简单过滤，避免双引擎各算一套口径 |

@@ -1,6 +1,6 @@
-"""表任务：StarRocks 维表 → Redis 批量同步（checklist 步骤 7，T+1）。
+"""表任务：ClickHouse 维表 → Redis 批量同步（checklist 步骤 7，T+1）。
 
-职责：读 StarRocks dim_customer_offline / dim_merchant_offline → 批量写 Redis，
+职责：读 ClickHouse dim_customer_offline / dim_merchant_offline → 批量写 Redis，
       供实时 Flink Lookup Join 打宽使用。
 调度：python -m src.pipelines.sync_dim_redis
 
@@ -8,7 +8,7 @@ key 设计：dim:customer:{customer_id} / dim:merchant:{merchant_id}（Hash 结�
 刷新策略：全量覆盖（hset 幂等）；维表实体在 T+1 全量刷新下基本只增不改删，
 孤儿 key 清理暂不做，需要时按「SCAN 对比 ID 集合 → DELETE」补。
 """
-import pymysql
+import clickhouse_connect
 import redis
 
 from config.settings import settings
@@ -22,20 +22,19 @@ BATCH_SIZE = 1000     # pipeline 每 1000 条 execute 一次，防单包过大
 
 
 def fetch_dim_rows(table: str) -> list[dict]:
-    """读 StarRocks 维表全量（9030 MySQL 协议直查，不起 Spark）。"""
-    conn = pymysql.connect(
-        host=settings.starrocks_host,
-        port=settings.starrocks_query_port,
-        user=settings.starrocks_user,
-        password=settings.starrocks_password,
-        database=settings.starrocks_database,
+    """读 ClickHouse 维表全量（HTTP 8123 直查，不起 Spark）。
+
+    加 FINAL：ReplacingMergeTree 后台 merge 未完成时强制去重。
+    """
+    client = clickhouse_connect.get_client(
+        host=settings.clickhouse_host,
+        port=settings.clickhouse_http_port,
+        username=settings.clickhouse_user,
+        password=settings.clickhouse_password,
+        database=settings.clickhouse_database,
     )
-    try:
-        with conn.cursor(pymysql.cursors.DictCursor) as cur:
-            cur.execute(f"SELECT * FROM {table}")
-            return list(cur.fetchall())
-    finally:
-        conn.close()
+    result = client.query(f"SELECT * FROM {table} FINAL")
+    return [dict(zip(result.column_names, row)) for row in result.result_rows]
 
 
 def sync_table(r: redis.Redis, table: str, prefix: str, pk: str) -> int:

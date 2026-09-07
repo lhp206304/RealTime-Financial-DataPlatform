@@ -15,31 +15,42 @@ Python Generator → Kafka → Flink → StarRocks → FastAPI
 
 ---
 
-## V2 —— 流批一体（数仓分层 + Flink 进阶）【当前阶段】
+## V2 —— 流批一体（Lambda 架构：实时 + 离线双链路）【✅ 已完成】
 
 ```text
-离线：MinIO 历史 → PySpark → StarRocks (ODS→DWD→DWS→ADS) + dim_*
-                                          │ 批量同步(T+1)
-                                          ▼
-                                       Redis (维表缓存)
-                                          ▲ 查
-实时：Kafka(ODS) → Flink Job1(清洗+去重+查Redis打宽) → Kafka(DWD)
-                → Flink Job2(Watermark/Checkpoint/窗口) → StarRocks(DWS)
+离线（批处理层，T+1）：
+  MinIO 历史 Parquet → PySpark（ODS→DWD→DWS→ADS）→ ClickHouse
+  维表 dim_* → ClickHouse ──T+1 同步──▶ Redis（维表缓存）
+                                          ▲ Lookup 打宽
+实时（速度层）：                            │
+  Kafka(transaction) → Flink Job1(清洗 + 查 Redis 打宽 + 迟到侧输出) → Kafka(dwd_transaction)
+                     → Flink Job2(Watermark/Checkpoint/TUMBLE+HOP 窗口) → StarRocks
+
+服务层：FastAPI 双数据源 —— 实时表查 StarRocks、离线表查 ClickHouse
 ```
 
-两条链路独立算、汇聚到同一 StarRocks（流批一体）。V2 干两件事：
+两条链路**独立算、分开存**（StarRocks 承接实时、ClickHouse 承接离线），即 Lambda 架构：
 
-1. **离线批链路**：MinIO 存历史数据 → PySpark 走完整数仓分层（ODS→DWD→DWS→ADS）+ 维度表
-2. **升级实时链路**：改成分层架构（Kafka topic 分层）+ **Redis 维表打宽** + **Watermark 深化 / Checkpoint / 窗口函数**
+1. **批处理层**：MinIO 历史数据 → PySpark 走完整数仓分层（ODS→DWD→DWS→ADS）+ 维度表 → **ClickHouse**；维表 T+1 同步进 Redis
+2. **速度层**：Kafka topic 分层（transaction → dwd_transaction）+ **Redis Lookup 打宽** + Watermark/Checkpoint/窗口聚合 → StarRocks；迟到数据侧输出到 late 表
+3. **服务层**：API 按表的数据来源路由到对应引擎
 
-新增组件：MinIO（对象存储，本地替代 R2）、Redis（维表缓存）。
+> 与原计划的偏差：V2 设计时离线/实时汇聚到**同一个 StarRocks**，实际落地改为离线写 **ClickHouse**——离线大批量写不与实时查询争抢资源，双引擎各取所长（StarRocks 实时 upsert/点查、ClickHouse 离线大扫描），代价是 API 维护双数据源。
+
+新增组件：MinIO（对象存储，本地替代 R2）、Redis（维表缓存）、ClickHouse（离线 OLAP）。
 落地清单见 [checklists/v2.md](./checklists/v2.md)，架构原理见 [v2-realtime-warehouse-architecture.md](./knowledge/flink/v2-realtime-warehouse-architecture.md)。
 
 ---
 
-## V3 —— Python / 工程化
+## V3 —— 工程化 + Airflow 调度【当前阶段】
 
-补：Pydantic、pytest、logging、配置管理、异常处理、Docker 化。
+1. **Python 工程化**：Pydantic、pytest、logging、配置管理、异常处理、Docker 化（部分已随 V2 落地）
+2. **Airflow 调度落地**（离线链路从手工跑批改为定时调度）：
+   - 配置说明见 [checklists/v3-airflow.md](./checklists/v3-airflow.md)（部署方式、DAG 定义、环境变量、backfill、重试告警、前置检查）
+   - `src/pipelines/` 一个模块 = 一张表 = 一个 task，`run(dt)` 已支持业务日期参数（DAG 里传 `{{ ds }}`），无需改作业代码
+   - 依赖 DAG：维表组 `ods_customer/ods_merchant → dim_customer/dim_merchant → sync_dim_redis`；事实链路 `ods_transaction → dwd_transaction → [dws_customer_daily, dws_merchant_daily] → [ads_customer_profile, ads_daily_report, ads_merchant_top10]`（dwd 前需维表组就绪）
+   - Airflow 部署（docker-compose 加服务或 standalone），T+1 schedule（如每日凌晨），支持历史回补 backfill
+   - 任务级失败重试、告警；每层作业的前置依赖检查（上游当天分区有数据才跑）
 
 ---
 
@@ -65,24 +76,23 @@ Cloudflare R2 + CI/CD (GitHub Actions) + 云部署。最后做。
 
 ---
 
-## V7 —— Go 高并发练习（加分项）
+## V7 —— Go 并行实现（高并发）
 
-主链路跑通后，用 **Go 重写 generator 和 API**，专门练高并发：
+主链路稳定后，用 **Go 重写 generator 和 API**，作为独立并行实现：
 
 ```text
-Go Generator → Kafka        （goroutine + channel 并发生产）
-StarRocks → Go API          （连接池 + context 超时 + 优雅关闭）
+Go Generator → Kafka                  （goroutine + channel 并发生产）
+StarRocks / ClickHouse → Go API       （双数据源 + 连接池 + context 超时 + 优雅关闭）
 ```
 
-- 不改变主链路（Python 版仍是主体），Go 版作为并行实现
-- 目的：简历形成 **Python(主) + Go(加分)** 双标签，补 Go 高并发经验
-- 要练：goroutine 数量控制、channel 背压、连接池、context 取消、优雅退出
+- 不改变主链路（Python 版仍是主体），Go 版独立部署
+- 覆盖：goroutine 数量控制、channel 背压、连接池、context 取消、优雅退出
 
 ---
 
 ## 技术栈（最终，控制范围）
 
-核心标签：**Python / SQL / Kafka / Flink / Spark / PySpark / StarRocks / FastAPI / Docker / Cloud**
+核心：**Python / SQL / Kafka / Flink / Spark / PySpark / StarRocks / ClickHouse / FastAPI / Docker / Cloud**
 
-Go 作为**可选加分标签**（做完 V7 再加）。
+Go 为可选并行实现（V7 阶段引入）。
 

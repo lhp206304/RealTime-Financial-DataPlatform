@@ -1,6 +1,6 @@
-"""表任务：ADS 商户销售额 Top10 榜单 → StarRocks ads_merchant_top10_daily。
+"""表任务：ADS 商户销售额 Top10 榜单 → ClickHouse ads_merchant_top10_daily。
 
-职责：DWS 商户日汇总 → 按 dt 窗口排名取 Top10 + 当日销售额占比 → 写 StarRocks。
+职责：DWS 商户日汇总 → 按 dt 窗口排名取 Top10 + 当日销售额占比 → 写 ClickHouse。
 调度：python -m src.pipelines.ads_merchant_top10 2026-09-04
 """
 import sys
@@ -9,8 +9,8 @@ from pyspark.sql import DataFrame
 from pyspark.sql import Window
 from pyspark.sql.functions import col, row_number, round, sum
 
-from src.io.starrocks_reader import read_from_starrocks
-from src.io.starrocks_writer import overwrite_partition_to_starrocks
+from src.io.clickhouse_reader import read_from_clickhouse
+from src.io.clickhouse_writer import overwrite_partition_to_clickhouse
 from src.spark import get_spark_session
 
 SOURCE_TABLE = "dws_merchant_daily"
@@ -46,10 +46,10 @@ def run(dt: str) -> None:
     """读 DWS 当天分区 → Top10 榜单 → 写当天分区。"""
     spark = get_spark_session(app_name=f"ads_merchant_top10_{dt}")
 
-    dws = read_from_starrocks(spark, SOURCE_TABLE, dt)   # 榜单只看当天，不需要历史
+    dws = read_from_clickhouse(spark, SOURCE_TABLE, dt)   # 榜单只看当天，不需要历史
     top10 = build(dws)
 
-    overwrite_partition_to_starrocks(spark, top10, TARGET_TABLE, dt)
+    overwrite_partition_to_clickhouse(spark, top10, TARGET_TABLE, dt)
 
     spark.stop()
     print(f"ADS 商户Top10 {dt} 完成 → {TARGET_TABLE}")

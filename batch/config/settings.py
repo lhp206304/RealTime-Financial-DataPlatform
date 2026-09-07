@@ -1,8 +1,8 @@
-"""连接参数：所有 MinIO / StarRocks / Redis 地址集中在这。
+"""连接参数：所有 MinIO / ClickHouse / Redis 地址集中在这。
 
 环境变量覆盖默认值（前缀 BATCH_）：
-    BATCH_MINIO_ENDPOINT=http://minio:9000  → 覆盖 localhost
-    BATCH_STARROCKS_HOST=starrocks          → 覆盖 localhost
+    BATCH_MINIO_ENDPOINT=http://minio:9000      → 覆盖 localhost
+    BATCH_CLICKHOUSE_HOST=clickhouse            → 覆盖 localhost
 """
 from pydantic_settings import BaseSettings
 
@@ -15,13 +15,12 @@ class Settings(BaseSettings):
     minio_bucket_dim: str = "dim"      # 维度表桶：dim_customer.parquet / dim_merchant.parquet
     minio_bucket_fact: str = "fact"    # 事实表桶：fact_transaction.parquet（历史交易）
 
-    # ---- StarRocks（OLAP 汇聚层）----
-    starrocks_host: str = "localhost"
-    starrocks_port: int = 8030          # FE HTTP 端口（Spark Connector Stream Load 用）
-    starrocks_query_port: int = 9030    # FE MySQL 协议端口（pymysql 执行 DDL/DELETE 用）
-    starrocks_user: str = "root"
-    starrocks_password: str = ""
-    starrocks_database: str = "finance"
+    # ---- ClickHouse（离线 OLAP 汇聚层，PySpark T+1 写入）----
+    clickhouse_host: str = "localhost"
+    clickhouse_http_port: int = 8123        # HTTP 端口（clickhouse-connect / Spark Catalog 用）
+    clickhouse_user: str = "default"
+    clickhouse_password: str = ""
+    clickhouse_database: str = "finance"
 
     # ---- Redis（维表缓存，实时链路用）----
     redis_host: str = "localhost"
@@ -29,7 +28,6 @@ class Settings(BaseSettings):
     redis_db: int = 0
 
     model_config = {"env_prefix": "BATCH_"}
-
 
 # 单例：import 一次到处用
 settings = Settings()
