@@ -1,0 +1,8 @@
+# generator 依赖
+# 装：pip install -r requirements.txt
+
+pydantic>=2.13          # 数据模型 / 校验（Transaction、维度表）
+confluent-kafka>=2.15   # Kafka Producer（造数发消息）
+boto3>=1.43             # 连 MinIO（S3 协议）读写维度表
+pandas>=3.0             # DataFrame，读写 Parquet
+pyarrow>=25.0           # pandas 写 Parquet 的底层引擎（间接必需）

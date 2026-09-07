@@ -4,23 +4,36 @@
 
 ---
 
-## V1 —— 实时主链路 【当前阶段】
+## V1 —— 实时主链路 【✅ 已完成】
 
 ```text
 Python Generator → Kafka → Flink → StarRocks → FastAPI
 ```
 
 目标：端到端跑通。这是第一优先级。
+落地清单见 [checklists/v1.md](./checklists/v1.md)。
 
 ---
 
-## V2 —— 加入离线（流 + 批）
+## V2 —— 流批一体（数仓分层 + Flink 进阶）【当前阶段】
 
 ```text
-R2 → PySpark → StarRocks
+离线：MinIO 历史 → PySpark → StarRocks (ODS→DWD→DWS→ADS) + dim_*
+                                          │ 批量同步(T+1)
+                                          ▼
+                                       Redis (维表缓存)
+                                          ▲ 查
+实时：Kafka(ODS) → Flink Job1(清洗+去重+查Redis打宽) → Kafka(DWD)
+                → Flink Job2(Watermark/Checkpoint/窗口) → StarRocks(DWS)
 ```
 
-用 PySpark 处理历史数据、特征工程，与实时链路汇聚到 StarRocks。
+两条链路独立算、汇聚到同一 StarRocks（流批一体）。V2 干两件事：
+
+1. **离线批链路**：MinIO 存历史数据 → PySpark 走完整数仓分层（ODS→DWD→DWS→ADS）+ 维度表
+2. **升级实时链路**：改成分层架构（Kafka topic 分层）+ **Redis 维表打宽** + **Watermark 深化 / Checkpoint / 窗口函数**
+
+新增组件：MinIO（对象存储，本地替代 R2）、Redis（维表缓存）。
+落地清单见 [checklists/v2.md](./checklists/v2.md)，架构原理见 [v2-realtime-warehouse-architecture.md](./knowledge/flink/v2-realtime-warehouse-architecture.md)。
 
 ---
 

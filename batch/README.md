@@ -1,0 +1,390 @@
+# batch —— 离线批链路（PySpark 数仓分层加工）
+
+> V2 流批一体的离线部分：MinIO 历史数据 → PySpark 走完整数仓分层（ODS→DWD→DWS→ADS）→ StarRocks。
+> 与实时链路**独立算、最终汇聚到同一个 StarRocks**。
+
+---
+
+## 整体架构
+
+```text
+          ┌───────────────────────────────────────────────────┐
+          │          StarRocks（OLAP 汇聚层）                    │
+          │  dim_customer  dim_merchant                        │
+          │  ods_transaction → dwd_transaction_offline         │
+          │       ↓                  ↓                          │
+          │  dws_customer_daily  dws_merchant_daily            │
+          │       ↓                  ↓                          │
+          │  ads_customer_profile  ads_daily_report            │
+          └───────────────────────────────────────────────────┘
+                                 ▲                              
+                                 │  StarRocks Spark Connector  
+                                 │  （Stream Load）            
+    ┌────────────────────────────┴────────────────────────────┐
+    │                PySpark（本地模式）                        │
+    │   read → pipelines（读→纯函数加工→校验→写）→ StarRocks │
+    └────────────────────────────┬────────────────────────────┘
+                                 │ 读 Parquet                   
+    ┌────────────────────────────▼────────────────────────────┐
+    │          MinIO（数据湖，原始数据由 generator/ 造）         │
+    │  fact 桶： fact_transaction.parquet       （历史交易事实）│
+    │  dim 桶：  dim_customer.parquet           （客户维表）    │
+    │           dim_merchant.parquet            （商户维表）    │
+    └─────────────────────────────────────────────────────────┘
+```
+
+**数据流**（generator 负责造数，batch 负责加工）：
+
+```
+【generator/ 目录 —— 数据生产，不属于 batch】
+build_dimensions.py    ──→ MinIO dim 桶   造维表（先生成）
+build_transactions.py  ──→ MinIO fact 桶  批量造历史交易（ID 取自维表池）
+                                   ↓
+【batch/ 目录 —— Spark 分层加工，一张表 = src/pipelines/ 下一个模块】
+步骤5 ods_transaction.py    fact/dim → ODS        原样落地 StarRocks
+步骤5 dwd_transaction.py    ODS → 清洗 + JOIN 维表打宽 → DWD
+步骤5 dws_customer_daily.py  DWD → 按客户+天聚合 → DWS
+步骤5 dws_merchant_daily.py  DWD → 按商户+天聚合 → DWS
+步骤5 ads_customer_profile.py / ads_daily_report.py  DWS → 画像/大盘 → ADS
+步骤7 sync_dim_redis.py     StarRocks dim_* ──→ Redis  （实时 Flink 查 Redis 打宽用）
+```
+
+> ⚠️ 边界约定：**generator 负责造数（写 MinIO），batch 只读数不造数**。这符合真实数仓"主数据先行"的做法——维表作为主数据先生成，交易事实引用维表已有的 ID，天然保证 referential integrity（不会出现 JOIN 不上的孤儿 ID）。因此 batch 里没有"复制桶""从交易去重造维度"这类作业。
+>
+> 📦 **调度单元约定**：`src/pipelines/` 下**一个文件 = 一张目标表 = 一个可被 Airflow 调度的任务**。每个模块暴露 `run(dt)` 入口（内部自己完成 读→加工→校验→写），模块内的 `clean/aggregate/build` 是纯函数（DF→DF）供单测。Airflow 管表与表之间的依赖（ODS→DWD→DWS），表内部流程是模块自己的代码。
+
+---
+
+## 目录结构
+
+```
+batch/
+├── .venv/                       # 独立虚拟环境（PySpark 4.2 + Python 3.14 + JDK 17）
+├── setup_env.sh                 # 一键激活 venv + 设 3 个环境变量（source setup_env.sh）
+├── requirements.txt              # 依赖清单
+├── README.md                     # 本文档
+│
+├── config/                       # 配置层
+│   └── settings.py               # Pydantic Settings（MinIO/StarRocks/Redis，env var 覆盖）
+│
+├── src/                          # 核心层
+│   ├── spark.py                  #   SparkSession 工厂（统一配 MinIO S3A + Python worker）
+│   ├── schemas.py                #   StructType（与 generator/schema.py 对齐）
+│   ├── quality.py                #   数据质量校验（行数对比 / NULL 率 / 聚合比）
+│   │
+│   ├── io/                       #   读写层：换数据源只改这里
+│   │   ├── minio_reader.py       #     读 MinIO Parquet（fact 交易 / dim 维表）
+│   │   ├── starrocks_writer.py   #     写 StarRocks：overwrite_partition（事实表按天）/ overwrite_table（维表全量）
+│   │   └── starrocks_reader.py   #     读 StarRocks（DWS/ADS 回读上层表用）
+│   │
+│   └── pipelines/                #   表任务层：一个文件 = 一张目标表 = 一个调度任务
+│       ├── ods_transaction.py    #     ODS：fact → ods_transaction（原样落地）
+│       ├── dwd_transaction.py    #     DWD：清洗 + JOIN 维表打宽 → dwd_transaction_offline
+│       │                           #     （内含纯函数 clean/enrich_customer/enrich_merchant）
+│       ├── dws_customer_daily.py #     DWS：按客户+天聚合 → dws_customer_daily
+│       ├── dws_merchant_daily.py #     DWS：按商户+天聚合 → dws_merchant_daily
+│       ├── ads_customer_profile.py#   ADS：客户画像 → ads_customer_profile
+│       ├── ads_daily_report.py   #     ADS：每日大盘 → ads_daily_report
+│       └── sync_dim_redis.py     #     StarRocks 维表 → Redis（checklist 步骤 7）
+│
+└── tests/                        # 测试层：测 pipelines 里的纯函数，不连 MinIO/StarRocks
+    ├── conftest.py               #   SparkSession fixture（整个 session 共用一个）
+    └── test_pipelines.py         #   表任务纯函数单测
+```
+
+### 分层设计原则
+
+| 层 | 为什么单独存在 | 改了会影响什么 |
+|---|---|---|
+| `config/` | 连接参数不硬编码，env var 一切换就是 dev/prod | 每个任务不用再写死 `localhost:9000` |
+| `src/spark.py` | SparkSession 创建逻辑只写一次，配置统一 | 每个任务不用各自 `.config(...)` |
+| `src/io/` | 读写抽象，换数据源（MinIO→S3）只改 reader/writer | 读写逻辑和业务逻辑解耦 |
+| `src/pipelines/` | **一张表一个模块**，内含 `run(dt)` 完整流程（读→加工→校验→写），是 Airflow 的调度单元 | 加表 = 加文件；某张表逻辑改动只动一个文件 |
+| `src/quality.py` | 每层加工后校验，防止脏数据静默流入下游 | DWD 打宽全 NULL 能提前发现，不是 DWS 对不上才找 |
+| `tests/` | pipelines 里的纯函数可脱离集群单测（造假 DF） | 改聚合逻辑不用跑全链路，pytest 就行 |
+
+> pipelines 模块里分两部分：**纯业务函数**（`clean`/`aggregate`/`build`，DF→DF，可单测）和 **`run(dt)` 入口**（建 Spark、调 io 读写、调 quality，给 Airflow/命令行调用）。这是"一个文件管一张表"和"业务逻辑可测"两个目标的折中，也是生产里 Spark 任务的常见写法。
+
+---
+
+## 环境准备
+
+### 1. 依赖组件（docker compose 起）
+
+```bash
+cd ../deploy
+docker compose up -d minio   # 9000 (API) / 9001 (控制台)
+# Kafka / StarRocks / Redis / Flink 不在 batch 依赖范围内，按需起
+```
+
+### 2. batch 虚拟环境
+
+```bash
+cd batch
+# 已创建则跳过
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+### 3. Java
+
+**PySpark 4.2.0** pip 包内自带 Spark 4.2 运行时，其内置 Hadoop 版本为 **3.4.3**（不用单独装 Hadoop/Spark），但 Spark JVM 需要 **JDK 17** 才能启动。
+
+```bash
+# 装 JDK 17（如已装跳过）
+brew install openjdk@17
+
+# 每次进入 batch/ 后先 source 环境变量脚本（推荐）
+source setup_env.sh
+
+# 或手动执行（~ 代表用户主目录 = /Users/walterlee/）
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17   # brew 安装 JDK 17 的默认位置
+export PYTHONPATH=.
+export PYSPARK_PYTHON=$(pwd)/.venv/bin/python
+
+# 如果把这三行写进 ~/.zshrc（即 /Users/walterlee/.zshrc），每次新开终端自动生效
+# 但 PYSPARK_PYTHON 的 $(pwd) 必须在当前目录展开，推荐用 setup_env.sh 临时设
+```
+
+三个环境变量缺一个就会出问题：
+
+| 变量 | 作用 | 不设的后果 |
+|---|---|---|
+| `JAVA_HOME` | Spark JVM 用 JDK 17 | `UnsupportedClassVersionError`（class file 61 vs 55） |
+| `PYTHONPATH` | Python 能 import `config/` `src/` | `ModuleNotFoundError: No module named 'config'` |
+| `PYSPARK_PYTHON` | Spark worker 子进程用 venv 的解释器 | worker 起不来：`PicklingError` / `RecursionError` |
+
+### 4. 环境变量覆盖配置（可选）
+
+`config/settings.py` 定义了所有连接参数的默认值，**import 时自动生效**，不需要单独运行。通过 `BATCH_` 前缀的环境变量可以覆盖默认值（不用改代码）：
+
+```python
+from config.settings import settings
+# ↑ import 即实例化 Settings()，会自动读 BATCH_* 环境变量覆盖默认值
+```
+
+覆盖示例：
+
+```bash
+export BATCH_MINIO_ENDPOINT=http://minio:9000       # 容器内连 MinIO
+export BATCH_STARROCKS_HOST=starrocks              # 容器内连 StarRocks
+export BATCH_MINIO_ACCESS_KEY=my_prod_key
+```
+
+生效顺序：**环境变量 > settings.py 默认值**。
+
+---
+
+## 执行方法
+
+### 步骤 0：准备原始数据（在 generator/ 目录，不在 batch）
+
+batch 只读数不造数。跑批前先确保 MinIO 的 dim / fact 桶有数据：
+
+```bash
+cd ../generator
+source .venv/bin/activate          # generator 有自己的 venv
+python build_dimensions.py         # 写 MinIO dim 桶（维表，先生成）
+python build_transactions.py       # 批量造历史交易 → 写 MinIO fact 桶（默认 10000 条）
+```
+
+产出：`dim/dim_customer.parquet`、`dim/dim_merchant.parquet`、`fact/fact_transaction.parquet`。
+
+### 步骤 3：PySpark 读 MinIO（冒烟验证）
+
+不需要单独脚本，用 Python 验证 SparkSession 能连（先 `source setup_env.sh`）：
+
+```bash
+python -c "
+from src.spark import get_spark_session
+from src.io.minio_reader import read_minio
+spark = get_spark_session('smoke')
+txns = read_minio(spark, "fact", "fact_transaction")
+print('交易行数:', txns.count())
+txns.printSchema()
+read_minio(spark, "dim", "dim_customer").show(3)
+spark.stop()
+"
+```
+
+### 步骤 4：StarRocks 建表（在 starrocks/ddl/ 里执行，不在 batch）
+
+```sql
+-- 建 dim_customer、dim_merchant、ods_transaction、
+-- dwd_transaction_offline、dws_customer_daily、dws_merchant_daily、
+-- ads_customer_profile、ads_daily_report
+```
+
+### 步骤 5：分层加工 → StarRocks
+
+按顺序一层层跑，每层任务内部都有 quality 校验。先 `source setup_env.sh`：
+
+```bash
+python -m src.pipelines.ods_transaction 2026-09-04    # ODS：原样落地
+python -m src.pipelines.dwd_transaction 2026-09-04    # DWD：清洗 + JOIN 维表打宽
+python -m src.pipelines.dws_customer_daily 2026-09-04 # DWS：按客户+天聚合
+python -m src.pipelines.dws_merchant_daily 2026-09-04 # DWS：按商户+天聚合
+python -m src.pipelines.ads_customer_profile 2026-09-04  # ADS：客户画像
+python -m src.pipelines.ads_daily_report 2026-09-04      # ADS：每日大盘
+```
+
+DWD 任务模块的结构（dwd_transaction.py，一文件一表）：
+
+```python
+# 纯业务函数（DF→DF，可单测）
+def clean(df): ...
+def enrich_customer(df, dim_customer): ...
+def enrich_merchant(df, dim_merchant): ...
+
+# 任务入口（Airflow / 命令行调这个）
+def run(dt: str):
+    spark = get_spark_session(app_name=f"dwd_transaction_{dt}")
+    raw = read_minio(spark, "fact", "fact_transaction", dt)          # io 层：读 MinIO fact 桶
+    dim_customer = read_minio(spark, "dim", "dim_customer")          # io 层：读维表
+    dim_merchant = read_minio(spark, "dim", "dim_merchant")
+
+    cleaned = clean(raw)                                     # 纯函数
+    enriched = enrich_customer(cleaned, dim_customer)        # 纯函数
+    enriched = enrich_merchant(enriched, dim_merchant)       # 纯函数
+
+    check_dwd(raw, enriched)                                 # 质量校验（写入前）
+    overwrite_partition_to_starrocks(spark, enriched, "dwd_transaction_offline", dt)  # io 层：删当天+写
+    spark.stop()
+```
+
+### 步骤 7：StarRocks 维表 → Redis
+
+实时 Flink 打宽需要 Redis 里有维度数据：
+
+```bash
+python -m src.pipelines.sync_dim_redis
+# key: dim:customer:{customer_id} / dim:merchant:{merchant_id}
+# value: Hash 存属性
+# 这是 T+1 批量同步，不是实时
+```
+
+### 一条串行跑全链路
+
+```bash
+# 一天跑批脚本示例（写 run_all.sh）
+DT=2026-09-04
+python -m src.pipelines.ods_transaction $DT \
+  && python -m src.pipelines.dwd_transaction $DT \
+  && python -m src.pipelines.dws_customer_daily $DT \
+  && python -m src.pipelines.dws_merchant_daily $DT \
+  && python -m src.pipelines.ads_customer_profile $DT \
+  && python -m src.pipelines.ads_daily_report $DT \
+  && echo "全链路完成"
+```
+
+V3/V4 上 Airflow 后，**每个 pipelines 模块就是一个 task**（BashOperator 跑模块，或 PythonOperator 直接 import `run` 并传入业务日期 `{{ ds }}`），任务间依赖在 DAG 里声明：
+
+```python
+# dags/batch_daily.py（未来 V3/V4，不在 batch 目录内）
+ods >> dwd >> [dws_customer, dws_merchant] >> [ads_profile, ads_report] >> sync_redis
+```
+
+---
+
+## 单测
+
+```bash
+pytest tests/
+```
+
+测什么：pipelines 模块里的**纯业务函数**（clean/aggregate/build），不用连 MinIO/StarRocks，造假 DF 进来就可以。注意 `run()` 含 IO 不在这里测（那是集成测试）。示例：
+
+```python
+def test_clean_filters_negative_amount(spark):
+    df = spark.createDataFrame([(-1,"C1"),(100,"C2")], ["amount","customer_id"])
+    from src.pipelines.dwd_transaction import clean
+    assert clean(df).count() == 1
+```
+
+---
+
+## 生产架构惯例对照
+
+这张卡用来快速判断"当前实现是不是行业内成熟的生产做法"。共 15 条，覆盖 7 大领域。
+
+### 一、代码分层 & 可测试性
+
+| # | 生产架构惯例 | 当前实现 | 是否符合 |
+|---|---|---|---|
+| 1 | **IO 与业务逻辑解耦**：读写抽象（Reader/Writer）独立，业务函数只处理 DF，换数据源只改 io 层 | `src/io/`（MinIO/StarRocks 读写）与 pipelines 里的纯业务函数（clean/aggregate）分离，纯函数不碰 IO | ✅ |
+| 2 | **一张表一个调度任务**：任务模块自己完成 读→加工→校验→写，Airflow 以表为单元调度 | `src/pipelines/` 一个文件 = 一张目标表 = 一个任务，内含 `run(dt)` 入口；Airflow 直接调 `run(dt)` | ✅ |
+| 3 | **业务逻辑可脱离集群单测**：纯函数不依赖 MinIO / StarRocks，造假 DF 即可跑 pytest | pipelines 模块内的 clean/aggregate/build 是纯函数，tests/ 造假 DF 测，`run()` 含 IO 不参与单测 | ✅ |
+| 4 | **SparkSession 单例工厂**：配置（S3A、worker、connector jar）集中在一处，每个任务不用重复写 | `src/spark.py` 统一 builder.config(...)；新增表任务只需 `get_spark_session(app_name=...)` | ✅ |
+
+### 二、配置 & 环境管理
+
+| # | 生产架构惯例 | 当前实现 | 是否符合 |
+|---|---|---|---|
+| 5 | **连接参数不硬编码**：地址/账号/密码放配置或 env var，不在代码里写死 `localhost` / `minioadmin` | `config/settings.py` 用 Pydantic Settings，默认值 + `BATCH_*` 环境变量覆盖；`env var > 默认值` | ✅ |
+| 6 | **环境变量一键加载**：不要求用户记 3~5 个 export 命令和顺序，一条命令解决 | `setup_env.sh`：`source setup_env.sh` 一条 = venv 激活 + JAVA_HOME + PYTHONPATH + PYSPARK_PYTHON，附带验证打印 | ✅ |
+| 7 | **dev / prod 切换不碰代码**：环境前缀隔离（`BATCH_*`），同一个包切换运行环境就是切环境变量 | `BATCH_MINIO_ENDPOINT=http://minio:9000` 即可从本机切到容器网络连 MinIO，不改 settings.py | ✅ |
+
+### 三、数仓分层 & 数据质量
+
+| # | 生产架构惯例 | 当前实现 | 是否符合 |
+|---|---|---|---|
+| 8 | **每层独立任务、支持单独重跑**：ODS / DWD / DWS / ADS 各一个表任务 + 业务日期参数，一层挂了不需要从第一层重来 | `src/pipelines/` 下 7 个表任务各自独立，都接收 `dt=YYYY-MM-DD`，可单独跑任意一张表 | ✅ |
+| 9 | **每层加工前有前置依赖检查**：跑 DWD 前确认 ODS 当天有数据，跑 DWS 前确认 DWD 当天有数据 | 未实现（当前 run() 直接读，没分区/数据存在性检查）；步骤 5 落地时加 | ⚠️ 待补 |
+| 10 | **质量在写入前校验**（写入即最终）：行数对比 / NULL 率 / ID 完整性，脏数据发现于写入前而非下游聚合发现时 | `src/quality.py`：`check_ods` 行数、`check_dwd` NULL 率、`check_dws` 聚合比；在各表任务调 `overwrite_partition_to_starrocks()` **之前**校验 | ✅ |
+| 11 | **分层输出幂等**：同一 dt 跑多次不产生重复数据（覆盖写 / upsert） | writer 已分两个入口：事实表 `overwrite_partition_to_starrocks`（先 `DELETE WHERE dt=当天` 再 append，重跑当天不重复）；维表 `overwrite_table_to_starrocks`（整表 overwrite）。DELETE 执行通道（Catalog/pymysql）步骤 5 落地 | ⚠️ 待补 |
+
+### 四、调度 & 运维
+
+| # | 生产架构惯例 | 当前实现 | 是否符合 |
+|---|---|---|---|
+| 12 | **任务接收业务日期参数**：不写死"今天"或"昨天"，由 Airflow 传入 `{{ ds }}`，便于重跑历史和回溯 | 所有表任务的 `run(dt)` 接收日期参数，`__main__` 从 `sys.argv[1]` 取，默认值仅用于手动验证 | ✅ |
+| 13 | **每个任务有明确的 exit code / 异常传递**：失败即非 0 退出码，调度系统能判定失败触发告警 | 未专门处理异常（Python 默认未捕获异常返回 exit code 1，基本可用）；生产级建议加日志化异常捕获 + traceback | ⚠️ 基础 OK，生产级可加 |
+| 14 | **任务可声明成 DAG**：依赖关系清晰（ODS→DWD→DWS→ADS），任务粒度=表粒度，Airflow 迁移零改动 | 表任务直接包成 BashOperator（`python -m src.pipelines.xxx {{ds}}`）或 PythonOperator（import `run`），依赖在 DAG 里声明 | ✅ |
+
+### 五、合规 & 可追溯
+
+| # | 生产架构惯例 | 当前实现 | 是否符合 |
+|---|---|---|---|
+| 15 | **输入输出有明确血缘**：哪个任务读了哪张表哪个日期、写了哪张表有据可查 | 每个表任务开头 `read_minio()`/`read_from_starrocks()` 和结尾 `overwrite_partition/table_to_starrocks(table=...)` 形成直观血缘（模块内常量 TARGET_TABLE/SOURCE_TABLE）；生产级可接 OpenLineage | ⚠️ 基础 OK，可接血缘工具 |
+
+### 符合度小结
+
+```
+✅ 完全符合（11 条）：分层、单测、配置、一键环境、独立重跑、质量前置、调度参数化...
+⚠️ 有基础 / 待落地（4 条）：前置依赖检查、幂等写入、异常日志化、血缘采集
+    → 前 3 项在 checklist 步骤 5 落地 StarRocks connector 时一并补齐；血缘留到 V3/V4 Airflow 阶段再上
+```
+
+---
+
+## 关键约定
+
+| 约定 | 为什么 |
+|---|---|
+| 维表是主数据，**由 generator 先行造好**；交易只引用维表已有 ID | 维表先有 ID 池，交易从池中选，不会出现 JOIN 不上的孤儿 ID |
+| pipelines 里的业务函数是**纯函数**：只拿 DF，只回 DF，不碰 IO | 才能单测；不然改一行要跑全链路 |
+| 一个模块管**一张目标表**，`run(dt)` 里自己读→加工→校验→写 | Airflow 以表为调度单元；加表=加文件，单表重跑互不影响 |
+| `event_time` 截到毫秒 | Flink JSON 只认 3 位微秒，6 位会解析失败 |
+| 金额 `Decimal`，写 Parquet 保留精度 | Float 会有 0.1 + 0.2 = 0.30000000000000004 问题 |
+| `spark.pyspark.python` 强制 venv | PATH 里的 python 不一定是 venv 的，版本不一致会炸 |
+| quality 校验在 **写入之前** 调 | 脏数据进了下游再发现，代价是重新跑整个链路 |
+
+---
+
+## Checklist 对应关系
+
+| 文件 / 模块 | v2.md checklist 步骤 |
+|---|---|
+| `generator/build_dimensions.py` | 步骤 2 前置：造维表 → MinIO dim 桶（主数据先行） |
+| `generator/build_transactions.py` | 步骤 1：批量造历史交易 → MinIO fact 桶 |
+| `src/spark.py` + `src/io/minio_reader.py` | 步骤 3：PySpark 读 MinIO |
+| `starrocks/ddl/`（上级目录） | 步骤 4：建分层表 |
+| `src/pipelines/ods_transaction.py` | 步骤 5：ODS → StarRocks |
+| `src/pipelines/dwd_transaction.py` | 步骤 5：DWD 清洗打宽 → StarRocks |
+| `src/pipelines/dws_customer_daily.py` / `dws_merchant_daily.py` | 步骤 5：DWS 聚合 → StarRocks |
+| `src/pipelines/ads_customer_profile.py` / `ads_daily_report.py` | 步骤 5：ADS 画像/报表 → StarRocks |
+| `src/pipelines/sync_dim_redis.py` | 步骤 7：StarRocks 维表 → Redis |
+
+> 说明：checklist 步骤 1/2 原设计的"造历史/从交易去重造维度"由 generator 目录承担（主数据先行，维表先生成、交易引用维表 ID），batch 只做步骤 3~7 的加工。

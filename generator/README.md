@@ -1,77 +1,89 @@
-# generator —— 数据生成 + Kafka Producer (Python)
+# generator —— 数据生成模块（维度表 + 交易流水 + Kafka 实时流）
 
-用 Python 生成模拟金融交易数据，通过 Kafka Producer 发送到 `transaction` topic。
+用 Python 生成模拟金融数据：三张维度表和交易流水落地 MinIO（Parquet），实时交易流发送到 Kafka `transaction` topic。
 
-> Data Engineer 主链路组件。用 Pydantic 做 Schema 校验，体现「Python Data Engineering」而非只会 Pandas。
+> Pydantic 做 Schema 校验；交易 ID 全部来自维度池，保证下游 JOIN 不落空。
 
 ---
 
-## 目录布局
+## 文件职责
+
+| 文件 | 干什么 |
+|---|---|
+| [schema.py](schema.py) | 表结构定义：事实表 `Transaction` + 三张维度表（Pydantic 模型 + 枚举） |
+| [build_dimensions.py](build_dimensions.py) | 造三张维度表（客户/账户/商户）→ Parquet → MinIO `dim` 桶 |
+| [build_transactions.py](build_transactions.py) | 造交易流水 → Parquet → MinIO `fact` 桶（批量模式）；也提供实时造单条函数 |
+| [kafka_producer.py](kafka_producer.py) | Kafka Producer 封装（acks=all、重试、回调日志、flush） |
+| [send_realtime.py](send_realtime.py) | 实时流入口：造一条 → 发 Kafka，Ctrl+C 优雅退出 |
+
+---
+
+## 数据流
 
 ```text
-generator/
-├── generator/          # 包代码（你写）
-│   ├── __init__.py
-│   ├── model.py        # Pydantic 模型
-│   ├── producer.py     # Kafka Producer 封装
-│   └── __main__.py     # 入口：python -m generator
-├── tests/              # pytest（你写）
-├── pyproject.toml      # 依赖/配置
-└── README.md
+schema.py 定义表结构
+    ↓
+build_dimensions.py ──→ MinIO dim 桶（dim_customer / dim_account / dim_merchant.parquet）
+    ↓ 读维度池
+build_transactions.py ──→ MinIO fact 桶（fact_transaction.parquet，批量补历史）
+    ↓
+send_realtime.py ──→ Kafka transaction topic（实时流，喂 Flink）
 ```
+
+两种生成模式（`GenMode`）：
+
+| 模式 | event_time | 用途 |
+|---|---|---|
+| `batch` | 开户时间 + 0~120 小时随机 | 离线补历史数据 |
+| `realtime` | 当前时间往前 0~5 秒（乱序） | 实时流，给 Flink Watermark |
 
 ---
 
-## 数据实体
+## 快速开始
 
-V1 只需要 `Transaction`（其他实体后续阶段再加）：
+```bash
+# 0. 起依赖（Kafka 3 分区 topic 由 init-kafka 自动创建；MinIO 需在跑）
+docker compose -f ../deploy/docker-compose.yml up -d
+
+# 1. 造维度表 → MinIO dim 桶（首次用 override=True 全量造）
+python build_dimensions.py
+
+# 2a. 批量造交易 → MinIO fact 桶
+python build_transactions.py
+
+# 2b. 实时流 → Kafka（一直发，Ctrl+C 退出）
+python send_realtime.py
+```
+
+依赖安装：`pip install -r requirements.txt`
+
+---
+
+## 交易数据样例
 
 ```json
 {
-  "transaction_id": "TX100001",
-  "customer_id": 10001,
-  "account_id": 20001,
-  "merchant_id": 30001,
-  "amount": 1288.50,
-  "currency": "CNY",
-  "transaction_type": "PAYMENT",
-  "event_time": "2026-08-30T18:00:01"
+  "transaction_id": "T1c67f76c2e384096",
+  "amount": "7833.49",
+  "currency": "EUR",
+  "customer_id": "C16117",
+  "account_id": "A28275",
+  "merchant_id": "M10030",
+  "transaction_type": "REFUND",
+  "event_time": "2026-08-07T05:33:07.826Z"
 }
 ```
 
----
-
-## 你要实现的清单
-
-### `model.py`
-- [ ] 用 **Pydantic** 定义 `Transaction`（字段类型 + 校验：金额>0、币种枚举、时间格式）
-- [ ] 造数逻辑：随机 customer/merchant/amount/type，`event_time` 故意制造少量**乱序**（给 Flink Watermark 用）
-
-### `producer.py`
-- [ ] 封装 Kafka Producer（推荐 `confluent-kafka`）
-- [ ] 按 `customer_id` 或 `account_id` 做 **partition key**（保证同一用户消息有序）
-- [ ] 发送失败处理：重试 / 错误日志
-
-### `__main__.py`
-- [ ] 从配置读 Kafka 地址、topic、生产速率（如每秒 N 条）
-- [ ] 主循环生产 + 速率控制
-- [ ] 优雅退出（signal 处理，flush 剩余消息）
+要点：金额用 Decimal（JSON 里是字符串，避免浮点误差）；`event_time` 截到毫秒（Flink JSON 只认 3 位微秒）；同一 `customer_id` 作为 Kafka key 进同一分区，保证单客户有序。
 
 ---
 
-## 要练/要能讲清楚的知识点
+## 知识点（面试要能讲清楚）
 
-| 主题 | 面试要能回答 |
+| 主题 | 要能回答 |
 |---|---|
-| Partition | 为什么这么设计 partition？key 怎么选？ |
-| Message Ordering | 怎么保证同一用户消息有序？ |
-| Delivery Semantics | at-least-once / exactly-once 怎么权衡？ |
-| Pydantic | 为什么用 Schema 校验？校验失败怎么处理？ |
-
----
-
-## 建议实现顺序
-
-1. 先跑通「造一条 → 打印」
-2. 再接 Kafka「造一条 → 发一条」
-3. 最后上速率控制 + 优雅退出 + 单元测试
+| Partition | 为什么 key 选 customer_id？怎么保证同一用户消息有序？ |
+| Delivery Semantics | acks=all + retries 换来什么？at-least-once 的代价？ |
+| Pydantic | 为什么入 Kafka 前做 Schema 校验？校验失败怎么办？ |
+| 乱序与 Watermark | 为什么造 0~5 秒乱序？Watermark 设多了/少了会怎样？ |
+| MinIO 追加写 | put_object 是覆盖写，追加为什么要「读旧 + concat + 写回」？ |

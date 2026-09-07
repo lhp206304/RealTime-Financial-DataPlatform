@@ -30,5 +30,12 @@ docs/checklists/
 
 # 排查记录 / 本地依赖 / IDE（不推送）
 docs/troubleshooting/
+docs/v3-lambda-roadmap.md
 flink/lib/
 api/.vscode/
+
+flink/udf/dependency-reduced-pom.xml
+
+api/test.py
+.vscode/
+target/
