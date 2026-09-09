@@ -1,0 +1,44 @@
+ods:
+  - task_id: ods_transaction
+    application: /opt/jobs/src/pipelines/ods_transaction.py
+  - task_id: ods_merchant
+    application: /opt/jobs/src/pipelines/ods_merchant.py
+  - task_id: ods_customer
+    application: /opt/jobs/src/pipelines/ods_customer.py
+
+dim:
+  - task_id: dim_customer
+    application: /opt/jobs/src/pipelines/dim_customer.py
+    depends_on: [ods_customer]
+  - task_id: dim_merchant
+    application: /opt/jobs/src/pipelines/dim_merchant.py
+    depends_on: [ods_merchant]
+
+dwd:
+  - task_id: dwd_transaction
+    application: /opt/jobs/src/pipelines/dwd_transaction.py
+    depends_on: [ods_transaction, dim_customer, dim_merchant]
+
+dws:
+  - task_id: dws_customer_daily
+    application: /opt/jobs/src/pipelines/dws_customer_daily.py
+    depends_on: [dwd_transaction]
+  - task_id: dws_merchant_daily
+    application: /opt/jobs/src/pipelines/dws_merchant_daily.py
+    depends_on: [dwd_transaction]
+
+ads:
+  - task_id: ads_daily_report
+    application: /opt/jobs/src/pipelines/ads_daily_report.py
+    depends_on: [dws_merchant_daily]
+  - task_id: ads_customer_profile
+    application: /opt/jobs/src/pipelines/ads_customer_profile.py
+    depends_on: [dws_customer_daily]
+  - task_id: ads_merchant_top10
+    application: /opt/jobs/src/pipelines/ads_merchant_top10.py
+    depends_on: [dws_merchant_daily]
+
+post:
+  - task_id: sync_dim_redis
+    bash_command: "python3 -m src.pipelines.sync_dim_redis"
+    depends_on: [dim_customer, dim_merchant]

@@ -1,3 +1,23 @@
+x-spark-common: &spark-common
+  build: ../batch # 构建上下文 = batch/ 目录，读 batch/Dockerfile（新机器必须先 build）
+  image: batch-spark:4.2.0
+  environment:
+    PYTHONPATH: /opt/jobs
+  working_dir: /opt/jobs
+  volumes:
+    - ../batch:/opt/jobs
+    - ../clickhouse/ddl:/opt/clickhouse/ddl:ro
+
+x-airflow-image: &airflow-image
+  build: ../airflow
+  image: batch-airflow:latest
+  # 注意：environment 是嵌套字典，服务级 << 浅合并会把它整个覆盖，
+  # 所以单独定义值锚点，在每个服务的 environment 内部用 <<: *airflow-base-env 合并
+  environment: &airflow-base-env
+    PYTHONPATH: /opt/jobs
+
+
+
 services:
   broker:
     image: apache/kafka:4.3.1
@@ -147,9 +167,94 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
 
+
+  spark-master:
+    <<: *spark-common
+    container_name: spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "8080:8080"               # Master Web UI
+      - "7077:7077"               # Master RPC（worker 和 spark-submit 连这个）
+
+  spark-worker:
+    <<: *spark-common
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      - spark-master
+    deploy:
+      replicas: 2                  # worker 数量，按需调整
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]   # 容器起来 ≠ 能连，探活到可接受连接为止
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  airflow-init:
+    <<: *airflow-image
+    container_name: airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy          # 等 pg_isready 通过再 migrate，避免首启撞库未就绪
+    environment:
+      <<: *airflow-base-env
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    command: >
+      bash -c "
+        airflow db migrate &&
+        airflow users create --username admin --password admin --firstname admin --lastname admin --role Admin --email admin@example.com || true
+      "
+
+  airflow-webserver:
+    <<: *airflow-image
+    container_name: airflow-webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully   # 等 init 容器正常退出（建表+建用户完成）再启动
+    ports:
+      - "8088:8080"          # Airflow Web UI（避开 Spark Master 的 8080）
+    environment:
+      <<: *airflow-base-env
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: ""   # 生产要生成：python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+    volumes:
+      - ../airflow/dags:/opt/airflow/dags
+      - ../batch:/opt/jobs             # 作业代码（SparkSubmitOperator 的 application 路径）
+    command: airflow webserver
+
+  airflow-scheduler:
+    <<: *airflow-image
+    container_name: airflow-scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *airflow-base-env
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__FERNET_KEY: ""
+    volumes:
+      - ../airflow/dags:/opt/airflow/dags
+      - ../batch:/opt/jobs
+    command: airflow scheduler
+
+
 volumes:
   kafka_data:
   starrocks_data:
   minio_data:
   redis_data:
   clickhouse_data:
+  postgres_data:

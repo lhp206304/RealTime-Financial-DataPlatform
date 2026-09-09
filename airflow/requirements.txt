@@ -1,0 +1,8 @@
+# 必须钉死版本：不钉的话 pip 会拉最新 provider，它要求 Airflow 3.x，
+# 会把基础镜像的 Airflow 2.9.3 静默升级成 3.x（命令/配置全变，镜像直接坏掉）
+apache-airflow==2.9.3
+apache-airflow-providers-apache-spark==4.9.0
+# ---- driver 端跑 batch 作业脚本所需（与 batch/requirements.txt 保持一致）----
+pydantic-settings>=2.0
+redis>=5.0
+clickhouse-connect>=0.7
