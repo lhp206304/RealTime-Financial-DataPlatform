@@ -23,7 +23,12 @@ RUN printf 'from pyspark.sql import SparkSession\nspark = SparkSession.builder.m
       --conf "spark.jars.excludes=software.amazon.awssdk:bundle" \
       /tmp/warmup.py \
  && find /root/.ivy2.5.2/cache -name '*.jar' -exec cp -n {} /opt/spark/jars/ \; \
- && rm -rf /root/.ivy2.5.2 /tmp/warmup.py
+ && rm -rf /root/.ivy2.5.2 /tmp/warmup.py \
+ && rm -f /opt/spark/jars/netty-*-4.1.*.jar
+# 上面这行不能省：AWS SDK v2 传递引入 netty 4.1.x，与 Spark 4.2 自带的 netty 4.2 同目录共存。
+# classpath 按文件名排序时 4.1 的 netty-transport 排在 4.2 前面先加载，
+# Spark 4.2 调用 4.2 才有的 SingleThreadEventLoop 构造方法 → NoSuchMethodError，
+# SparkContext 都起不来。4.1 模块全部删掉，统一用 4.2（netty-nio-client 未被 S3A 同步链路加载）。
 
 # ---- 3) Python 纯依赖（pyspark 镜像自带，不列入 requirements）----
 COPY requirements.txt /tmp/requirements.txt

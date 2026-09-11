@@ -13,9 +13,8 @@ venv/
 .pytest_cache/
 
 # 环境/密钥
-.env
 *.local
-
+**/.env
 # IDE
 .idea/
 .vscode/*
@@ -40,3 +39,9 @@ flink/udf/dependency-reduced-pom.xml
 api/test.py
 .vscode/
 target/
+
+# 测试目录
+# 任意层级的 test 目录：generator/test/、a/b/test/、根 test/
+# 和 test/ 等价，写法更啰嗦
+# test/ 只匹配单数 test，不影响 batch/tests/（正式测试目录，复数）
+test/

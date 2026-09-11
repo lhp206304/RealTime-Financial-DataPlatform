@@ -1,8 +1,8 @@
-# 必须钉死版本：不钉的话 pip 会拉最新 provider，它要求 Airflow 3.x，
-# 会把基础镜像的 Airflow 2.9.3 静默升级成 3.x（命令/配置全变，镜像直接坏掉）
-apache-airflow==2.9.3
-apache-airflow-providers-apache-spark==4.9.0
-# ---- driver 端跑 batch 作业脚本所需（与 batch/requirements.txt 保持一致）----
+# 本文件只放「在 airflow 容器里直接 import」的依赖（BashOperator 跑的同步脚本等）。
+# apache-airflow 与 spark provider 不写在这里：provider 必须 --no-deps 装，
+# 否则 pip 会拖入 pyspark（~400MB 完整 Spark 发行版），而本镜像用 /opt/spark 调 spark-submit，
+# 根本用不到 pip 版 pyspark，还会撑爆构建磁盘。见 Dockerfile。
 pydantic-settings>=2.0
 redis>=5.0
 clickhouse-connect>=0.7
+structlog>=24.1,<26     # 结构化 JSON 日志（shared/log.py）

@@ -1,0 +1,8 @@
+# 构建上下文排除项：这些不该进镜像
+.venv/          # 本机虚拟环境（macOS 二进制，进 Linux 镜像会崩）
+__pycache__/
+*.pyc
+.vscode/
+.git/
+*.md
+test.py

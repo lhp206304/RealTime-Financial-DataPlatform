@@ -6,6 +6,9 @@ from airflow.operators.bash import BashOperator
 from datetime import datetime
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 
+# 作业侧的统一配置（batch/config/settings.py，通过 /opt/jobs 挂载进 airflow 容器）
+from config.settings import settings
+
 # 1 读取yaml文件
 yaml_file = Path(__file__).parent/"config/warehouse_tables.yml"
 with open(yaml_file, "r") as f:
@@ -15,26 +18,32 @@ with open(yaml_file, "r") as f:
 # 2 解析yaml文件
 all_tasks={}
 
+# 连接信息全部从 settings 读（环境变量注入，与 api/compose 同一套变量名）；
+# 只有「部署绑定」类参数硬编码在这：driver 地址、executor 的 Python 路径。
 spark_conf = {
     "spark.pyspark.python": "/usr/bin/python3",
     "spark.pyspark.driver.python": "/usr/bin/python3",
+    # client 模式下 driver 跑在 scheduler 容器里，executor 在 spark-worker 上，
+    # 必须显式告诉 executor 回连 driver 的地址（用 compose 服务名，容器间可解析）
+    "spark.driver.host": "airflow-scheduler",
     # MinIO S3A
-    "spark.hadoop.fs.s3a.endpoint": "http://minio:9000",
-    "spark.hadoop.fs.s3a.access.key": "minioadmin",
-    "spark.hadoop.fs.s3a.secret.key": "minioadmin",
+    "spark.hadoop.fs.s3a.endpoint": settings.minio_endpoint,
+    "spark.hadoop.fs.s3a.access.key": settings.minio_access_key,
+    "spark.hadoop.fs.s3a.secret.key": settings.minio_secret_key,
     "spark.hadoop.fs.s3a.path.style.access": "true",
     "spark.hadoop.fs.s3a.impl": "org.apache.hadoop.fs.s3a.S3AFileSystem",
     # ClickHouse catalog
     "spark.sql.catalog.clickhouse": "com.clickhouse.spark.ClickHouseCatalog",
-    "spark.sql.catalog.clickhouse.host": "clickhouse",
+    "spark.sql.catalog.clickhouse.host": settings.clickhouse_host,
     "spark.sql.catalog.clickhouse.protocol": "http",
-    "spark.sql.catalog.clickhouse.http_port": "8123",
-    "spark.sql.catalog.clickhouse.user": "default",
-    "spark.sql.catalog.clickhouse.password": "",
-    "spark.sql.catalog.clickhouse.database": "finance",
+    "spark.sql.catalog.clickhouse.http_port": str(settings.clickhouse_http_port),
+    "spark.sql.catalog.clickhouse.user": settings.clickhouse_user,
+    "spark.sql.catalog.clickhouse.password": settings.clickhouse_password,
+    "spark.sql.catalog.clickhouse.database": settings.clickhouse_database,
 }
 common = dict(
-    conn_id="spark_default",       # Connection master=spark://spark-master:7077，须与 settings.spark_master 一致
+    # master 来自 spark_default 连接（docker-compose 里用 AIRFLOW_CONN_SPARK_DEFAULT 注入）
+    conn_id="spark_default",
     application_args=["{{ ds }}"],  # 业务日期传给脚本
     conf=spark_conf,
 )

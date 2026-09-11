@@ -1,7 +1,38 @@
+# 统一连接配置：所有 Python 服务（spark / airflow / api）共用这一套环境变量。
+# 命名按基础设施资源（MINIO_* / CLICKHOUSE_* ...），与 batch/api 的 settings 字段一一对应。
+# ${VAR:?msg}：变量未设置或空时，docker compose 启动直接报错退出（真实值放 deploy/.env，不入 git）。
+# 密码字段用 ${VAR?msg}（无冒号）：允许空字符串（本地无密码），但变量必须存在。
+x-conn-env: &conn-env
+  # MinIO
+  MINIO_ENDPOINT: ${MINIO_ENDPOINT:?MINIO_ENDPOINT 未设置，请检查 deploy/.env}
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY 未设置}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY 未设置}
+  MINIO_BUCKET_DIM: ${MINIO_BUCKET_DIM:?MINIO_BUCKET_DIM 未设置}
+  MINIO_BUCKET_FACT: ${MINIO_BUCKET_FACT:?MINIO_BUCKET_FACT 未设置}
+  # ClickHouse（HTTP 8123：api / batch / Spark Catalog）
+  CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:?CLICKHOUSE_HOST 未设置}
+  CLICKHOUSE_HTTP_PORT: ${CLICKHOUSE_HTTP_PORT:?CLICKHOUSE_HTTP_PORT 未设置}
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER:?CLICKHOUSE_USER 未设置}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD?CLICKHOUSE_PASSWORD 未设置（允许空密码，但变量必须存在）}
+  CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:?CLICKHOUSE_DATABASE 未设置}
+  # StarRocks（MySQL 9030：api 实时查询）
+  STARROCKS_HOST: ${STARROCKS_HOST:?STARROCKS_HOST 未设置}
+  STARROCKS_MYSQL_PORT: ${STARROCKS_MYSQL_PORT:?STARROCKS_MYSQL_PORT 未设置}
+  STARROCKS_USER: ${STARROCKS_USER:?STARROCKS_USER 未设置}
+  STARROCKS_PASSWORD: ${STARROCKS_PASSWORD?STARROCKS_PASSWORD 未设置（允许空密码，但变量必须存在）}
+  STARROCKS_DATABASE: ${STARROCKS_DATABASE:?STARROCKS_DATABASE 未设置}
+  # Redis
+  REDIS_HOST: ${REDIS_HOST:?REDIS_HOST 未设置}
+  REDIS_PORT: ${REDIS_PORT:?REDIS_PORT 未设置}
+  REDIS_DB: ${REDIS_DB:?REDIS_DB 未设置}
+  # Spark
+  SPARK_MASTER: ${SPARK_MASTER:?SPARK_MASTER 未设置}
+
 x-spark-common: &spark-common
   build: ../batch # 构建上下文 = batch/ 目录，读 batch/Dockerfile（新机器必须先 build）
   image: batch-spark:4.2.0
   environment:
+    <<: *conn-env
     PYTHONPATH: /opt/jobs
   working_dir: /opt/jobs
   volumes:
@@ -14,7 +45,14 @@ x-airflow-image: &airflow-image
   # 注意：environment 是嵌套字典，服务级 << 浅合并会把它整个覆盖，
   # 所以单独定义值锚点，在每个服务的 environment 内部用 <<: *airflow-base-env 合并
   environment: &airflow-base-env
+    <<: *conn-env
     PYTHONPATH: /opt/jobs
+    # webserver 拉取 worker/scheduler 子进程日志（8793 端口）的鉴权密钥，
+    # 所有 airflow 组件必须一致，否则 UI 看日志报 403 FORBIDDEN
+    AIRFLOW__WEBSERVER__SECRET_KEY: "airflow-dev-secret-key-please-change-in-prod"
+      # SparkSubmitOperator 的 spark_default 连接：host 即 spark-submit --master 的值。
+    # 不配置的话 hook 找不到连接会静默回退 yarn（本集群是 standalone，没有 YARN）
+    AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type": "spark", "host": "spark://spark-master:7077"}'
 
 
 
@@ -167,6 +205,25 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
 
+  # FastAPI 服务层：实时查 StarRocks、离线查 ClickHouse（无状态，不挂卷）
+  api:
+    build: ../api                # 读 api/Dockerfile
+    image: finance-api:latest
+    container_name: api
+    ports:
+      - "8000:8000"              # FastAPI HTTP（浏览器/外部访问）
+    environment:
+      <<: *conn-env              # 容器内连 starrocks/clickhouse 用服务名
+    depends_on:
+      - starrocks
+      - clickhouse
+    healthcheck:
+      # python:3.11-slim 不带 curl，用 urllib 探活 /health
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
 
   spark-master:
     <<: *spark-common
@@ -232,6 +289,7 @@ services:
     volumes:
       - ../airflow/dags:/opt/airflow/dags
       - ../batch:/opt/jobs             # 作业代码（SparkSubmitOperator 的 application 路径）
+      - ../clickhouse/ddl:/opt/clickhouse/ddl:ro  # client 模式 driver 跑在本容器，ensure_table 要读 DDL
     command: airflow webserver
 
   airflow-scheduler:
@@ -248,6 +306,7 @@ services:
     volumes:
       - ../airflow/dags:/opt/airflow/dags
       - ../batch:/opt/jobs
+      - ../clickhouse/ddl:/opt/clickhouse/ddl:ro  # client 模式 driver 跑在本容器，ensure_table 要读 DDL
     command: airflow scheduler
 
 

@@ -9,31 +9,32 @@ V3 迁移说明：离线层从 StarRocks 换到 ClickHouse，但实时层仍在 
 所以两套查询入口并存；routers 按表的数据来源选对应函数。
 """
 
-import os
 import re
 
 import clickhouse_connect
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from app.settings import settings
+
 # ---- StarRocks 连接配置（实时链路）----
-# 宿主机跑 API 用 localhost；如果 API 也进容器，改成 service 名 starrocks
-DB_HOST = os.getenv("STARROCKS_HOST", "localhost")
-DB_PORT = int(os.getenv("STARROCKS_PORT", "9030"))
-DB_USER = os.getenv("STARROCKS_USER", "root")
-DB_PASSWORD = os.getenv("STARROCKS_PASSWORD", "")
-DB_NAME = os.getenv("STARROCKS_DB", "finance")
+# 全部从环境变量经 settings 读取（见 app/settings.py）
+DB_HOST = settings.starrocks_host
+DB_PORT = settings.starrocks_mysql_port
+DB_USER = settings.starrocks_user
+DB_PASSWORD = settings.starrocks_password
+DB_NAME = settings.starrocks_database
 
 # 查询超时（秒）：单条 SQL 跑太久就掐断
-QUERY_TIMEOUT = int(os.getenv("STARROCKS_QUERY_TIMEOUT", "5"))
+QUERY_TIMEOUT = settings.starrocks_query_timeout
 
 # ---- ClickHouse 连接配置（离线链路）----
-CH_HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
-CH_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))   # HTTP 端口
-CH_USER = os.getenv("CLICKHOUSE_USER", "default")
-CH_PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "")
-CH_NAME = os.getenv("CLICKHOUSE_DB", "finance")
-CH_QUERY_TIMEOUT = int(os.getenv("CLICKHOUSE_QUERY_TIMEOUT", "5"))
+CH_HOST = settings.clickhouse_host
+CH_PORT = settings.clickhouse_http_port          # HTTP 端口
+CH_USER = settings.clickhouse_user
+CH_PASSWORD = settings.clickhouse_password
+CH_NAME = settings.clickhouse_database
+CH_QUERY_TIMEOUT = settings.clickhouse_query_timeout
 
 
 # 模块级单例：整个进程共用一个 engine（内含连接池）
@@ -118,7 +119,9 @@ def get_clickhouse_client() -> clickhouse_connect.driver.client.Client:
             username=CH_USER,
             password=CH_PASSWORD,
             database=CH_NAME,
-            query_timeout=CH_QUERY_TIMEOUT,
+            # clickhouse-connect 1.x 移除了顶层 query_timeout，超时改走 settings：
+            # max_execution_time = ClickHouse 服务端单查询超时（秒）
+            settings={"max_execution_time": CH_QUERY_TIMEOUT},
         )
     return _ch_client
 

@@ -1,0 +1,8 @@
+# api 服务依赖（容器内 pip 安装）
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+pymysql>=1.1            # StarRocks MySQL 协议驱动
+clickhouse-connect>=0.7 # ClickHouse HTTP 驱动
+pydantic-settings>=2.0  # 配置从环境变量读取
+structlog>=24.1,<26     # 结构化 JSON 日志（shared/log.py）
