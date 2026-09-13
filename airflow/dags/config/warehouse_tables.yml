@@ -1,3 +1,17 @@
+# 任务编排配置：section 顺序 = 层级顺序
+#   有 command / bash_command 的任务走 BashOperator（纯 Python，不起 Spark）
+#   其余走 SparkSubmitOperator（application 指向 batch 管道脚本）
+# dependencies：显式上游；不写则默认依赖上一个 section 的全部任务（见 warehouse_dynamic.py）
+generate:
+  # 每日造数（脚本在 /opt/generator，compose 挂载 generator 目录）
+  - task_id: evolve_dimensions
+    command: "python3 daily_evolve.py {{ ds }} --add-customer 20 --update-customer 50 --delete-customer 10 --add-merchant 5 --update-merchant 10 --delete-merchant 3"
+    cwd: "/opt/generator"
+  - task_id: generate_transactions
+    command: "python3 daily_txn.py {{ ds }} --count 5000"
+    cwd: "/opt/generator"
+    dependencies: [evolve_dimensions]   # 先演进维度（软删），再造只引用 ACTIVE 实体的当天流水
+
 ods:
   - task_id: ods_transaction
     application: /opt/jobs/src/pipelines/ods_transaction.py
@@ -9,36 +23,36 @@ ods:
 dim:
   - task_id: dim_customer
     application: /opt/jobs/src/pipelines/dim_customer.py
-    depends_on: [ods_customer]
+    dependencies: [ods_customer]
   - task_id: dim_merchant
     application: /opt/jobs/src/pipelines/dim_merchant.py
-    depends_on: [ods_merchant]
+    dependencies: [ods_merchant]
 
 dwd:
   - task_id: dwd_transaction
     application: /opt/jobs/src/pipelines/dwd_transaction.py
-    depends_on: [ods_transaction, dim_customer, dim_merchant]
+    dependencies: [ods_transaction, dim_customer, dim_merchant]
 
 dws:
   - task_id: dws_customer_daily
     application: /opt/jobs/src/pipelines/dws_customer_daily.py
-    depends_on: [dwd_transaction]
+    dependencies: [dwd_transaction]
   - task_id: dws_merchant_daily
     application: /opt/jobs/src/pipelines/dws_merchant_daily.py
-    depends_on: [dwd_transaction]
+    dependencies: [dwd_transaction]
 
 ads:
   - task_id: ads_daily_report
     application: /opt/jobs/src/pipelines/ads_daily_report.py
-    depends_on: [dws_merchant_daily]
+    dependencies: [dws_merchant_daily]
   - task_id: ads_customer_profile
     application: /opt/jobs/src/pipelines/ads_customer_profile.py
-    depends_on: [dws_customer_daily]
+    dependencies: [dws_customer_daily]
   - task_id: ads_merchant_top10
     application: /opt/jobs/src/pipelines/ads_merchant_top10.py
-    depends_on: [dws_merchant_daily]
+    dependencies: [dws_merchant_daily]
 
 post:
   - task_id: sync_dim_redis
     bash_command: "python3 -m src.pipelines.sync_dim_redis"
-    depends_on: [dim_customer, dim_merchant]
+    dependencies: [dim_customer, dim_merchant]

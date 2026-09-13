@@ -1,3 +1,7 @@
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
 from datetime import datetime
 
 from airflow import DAG

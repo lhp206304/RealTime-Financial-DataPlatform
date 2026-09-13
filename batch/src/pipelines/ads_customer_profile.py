@@ -6,6 +6,10 @@
 粒度说明：DWS 当天分区一行 = 一个客户（customer_id, dt 粒度），
 因此本层不需要再 groupBy 聚合，只做「透传 + 派生 + 打标」。
 """
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
 import sys
 
 from pyspark.sql import DataFrame
@@ -72,7 +76,7 @@ def run(dt: str) -> None:
     overwrite_partition_to_clickhouse(spark, ads, TARGET_TABLE, dt)
 
     spark.stop()
-    print(f"ADS 客户画像 {dt} 完成 → {TARGET_TABLE}")
+    logger.info("ADS 客户画像完成", dt=dt, table=TARGET_TABLE)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
 """Kafka Producer 封装：只管「怎么把一条消息发出去」。"""
 
-import logging
-
 from confluent_kafka import Producer, KafkaError, Message
 
-logger = logging.getLogger(__name__)
+from shared.log import get_logger
+
+logger = get_logger(__name__)
 
 
 def _on_delivery(err: KafkaError | None, msg: Message):
@@ -13,11 +13,13 @@ def _on_delivery(err: KafkaError | None, msg: Message):
     err 不为 None → 发送失败；否则成功。
     """
     if err is not None:
-        logger.error("消息发送失败 key=%s error=%s", msg.key().decode(), err)
+        logger.error("消息发送失败", key=msg.key().decode(), error=str(err))
     else:
         logger.info(
-            "发送成功 topic=%s partition=%s offset=%s",
-            msg.topic(), msg.partition(), msg.offset(),
+            "发送成功",
+            topic=msg.topic(),
+            partition=msg.partition(),
+            offset=msg.offset(),
         )
 
 

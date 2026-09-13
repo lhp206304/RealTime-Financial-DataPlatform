@@ -16,6 +16,9 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, lit
 
 from src.io.clickhouse_admin import ensure_table
+from shared.log import get_logger
+
+logger = get_logger(__name__)
 
 CATALOG = "clickhouse"
 
@@ -42,7 +45,7 @@ def overwrite_partition_to_clickhouse(
     """
     ensure_table(table)
     df.writeTo(_qualified(table)).overwrite(col("dt") == lit(dt))
-    print(f"写入 ClickHouse {table} 分区 dt={dt} 完成（Spark 分布式）")
+    logger.info("写入 ClickHouse 分区完成", table=table, dt=dt, mode="Spark分布式")
 
 
 def overwrite_table_to_clickhouse(
@@ -58,4 +61,4 @@ def overwrite_table_to_clickhouse(
     """
     ensure_table(table)
     df.writeTo(_qualified(table)).overwrite(lit(True))
-    print(f"全量重写 ClickHouse {table} 完成（Spark 分布式）")
+    logger.info("全量重写 ClickHouse 完成", table=table, mode="Spark分布式")

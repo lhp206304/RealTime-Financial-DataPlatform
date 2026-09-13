@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS finance.dim_customer_offline
     customer_id    String   NOT NULL COMMENT '客户ID',
     level          String   NOT NULL COMMENT '客户等级：V1/V2/V3/V4（CustomerLevel 枚举）',
     region         String   NOT NULL COMMENT '注册地',
-    register_time  DateTime NOT NULL COMMENT '开户时间'
+    register_time  DateTime NOT NULL COMMENT '开户时间',
+    status         String   NOT NULL COMMENT '状态：ACTIVE 存活 / DELETED 软删'
 )
 ENGINE = ReplacingMergeTree()
 ORDER BY customer_id

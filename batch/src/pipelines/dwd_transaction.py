@@ -5,6 +5,10 @@
 
 模块内 clean / enrich_* 是纯函数（DF→DF），在 tests/ 里造假 DF 即可单测。
 """
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
 import sys
 
 from pyspark.sql import DataFrame
@@ -68,7 +72,7 @@ def run(dt: str) -> None:
     overwrite_partition_to_clickhouse(spark, enriched, TARGET_TABLE, dt)
 
     spark.stop()
-    print(f"DWD {dt} 完成 → {TARGET_TABLE}")
+    logger.info("DWD 完成", dt=dt, table=TARGET_TABLE)
 
 
 if __name__ == "__main__":

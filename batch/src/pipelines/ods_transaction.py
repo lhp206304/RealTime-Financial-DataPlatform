@@ -3,6 +3,10 @@
 职责：MinIO fact 桶原始交易 → 不加工（最多类型对齐）→ 写 ClickHouse。
 调度：python -m src.pipelines.ods_transaction 2026-09-04（不传日期 = 全量）
 """
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
 import sys
 
 from pyspark.sql import DataFrame
@@ -44,7 +48,7 @@ def run(dt: str | None = None) -> None:
         overwrite_table_to_clickhouse(spark, ods, TARGET_TABLE)         # 不传 dt：首次全量初始化
 
     spark.stop()
-    print(f"ODS {dt or '全量'} 完成：{raw_count} 条 → {TARGET_TABLE}")
+    logger.info("ODS 完成", dt=dt or "全量", rows=raw_count, table=TARGET_TABLE)
 
 
 if __name__ == "__main__":

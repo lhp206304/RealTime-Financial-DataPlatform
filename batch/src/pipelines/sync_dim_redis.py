@@ -8,6 +8,10 @@ key 设计：dim:customer:{customer_id} / dim:merchant:{merchant_id}（Hash 结�
 刷新策略：全量覆盖（hset 幂等）；维表实体在 T+1 全量刷新下基本只增不改删，
 孤儿 key 清理暂不做，需要时按「SCAN 对比 ID 集合 → DELETE」补。
 """
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
 import clickhouse_connect
 import redis
 
@@ -73,7 +77,7 @@ def run() -> None:
     for table, (prefix, pk) in DIM_TABLES.items():
         n = sync_table(r, table, prefix, pk)
         verify(r, prefix, n)
-        print(f"{table} → Redis {prefix}* 同步 {n} 行 ✓")
+        logger.info("Redis 同步完成", table=table, prefix=prefix, rows=n)
 
 
 if __name__ == "__main__":

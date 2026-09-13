@@ -18,4 +18,6 @@ USER appuser
 EXPOSE 8000
 
 # 0.0.0.0：让容器外（宿主机/其他容器）能访问；不能只监听 127.0.0.1
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 用 python -m app.main 启动：在代码里调 uvicorn.run(log_config=None)，
+# 防止 uvicorn 命令行默认覆盖 setup_logging() 的 JSON 日志配置
+CMD ["python", "-m", "app.main"]

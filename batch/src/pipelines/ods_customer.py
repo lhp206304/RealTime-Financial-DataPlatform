@@ -4,6 +4,10 @@
 职责：MinIO dim 桶 dim_customer.parquet → 类型对齐 + 校验 → 写 ClickHouse（整表覆盖）。
 调度：python -m src.pipelines.ods_customer
 """
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
 import sys
 
 from pyspark.sql import DataFrame
@@ -17,6 +21,7 @@ from src.spark import get_spark_session
 SOURCE_TABLE = "dim_customer"
 TARGET_TABLE = "ods_customer"
 VALID_LEVELS = ["V1", "V2", "V3", "V4"]   # CustomerLevel 枚举值
+VALID_STATUS = ["ACTIVE", "DELETED"]       # DimStatus 枚举值（软删标记）
 
 
 def transform(df: DataFrame) -> DataFrame:
@@ -28,8 +33,10 @@ def check(df: DataFrame) -> None:
     """register_time 必须能转成时间；level 必须在 CustomerLevel 枚举内。"""
     bad_time = df.filter(col("register_time").isNull()).count()
     bad_level = df.filter(~col("level").isin(VALID_LEVELS)).count()
+    bad_status = df.filter(~col("status").isin(VALID_STATUS)).count()
     assert bad_time == 0, f"{bad_time} 行 register_time 转不了时间"
     assert bad_level == 0, f"{bad_level} 行 level 不在 {VALID_LEVELS} 内"
+    assert bad_status == 0, f"{bad_status} 行 status 不在 {VALID_STATUS} 内"
 
 
 def run(dt: str | None = None) -> None:
@@ -43,7 +50,7 @@ def run(dt: str | None = None) -> None:
 
     overwrite_table_to_clickhouse(spark, ods, TARGET_TABLE)   # 维表无分区：整表覆盖
     spark.stop()
-    print(f"ODS 客户维度完成：{raw_count} 条 → {TARGET_TABLE}")
+    logger.info("ODS 客户维度完成", rows=raw_count, table=TARGET_TABLE)
 
 
 if __name__ == "__main__":

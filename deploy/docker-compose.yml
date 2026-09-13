@@ -33,10 +33,11 @@ x-spark-common: &spark-common
   image: batch-spark:4.2.0
   environment:
     <<: *conn-env
-    PYTHONPATH: /opt/jobs
+    PYTHONPATH: /opt/jobs:/opt
   working_dir: /opt/jobs
   volumes:
     - ../batch:/opt/jobs
+    - ../shared:/opt/shared            # 共享模块（shared.log）挂载，开发热更
     - ../clickhouse/ddl:/opt/clickhouse/ddl:ro
 
 x-airflow-image: &airflow-image
@@ -46,7 +47,7 @@ x-airflow-image: &airflow-image
   # 所以单独定义值锚点，在每个服务的 environment 内部用 <<: *airflow-base-env 合并
   environment: &airflow-base-env
     <<: *conn-env
-    PYTHONPATH: /opt/jobs
+    PYTHONPATH: /opt/jobs:/opt
     # webserver 拉取 worker/scheduler 子进程日志（8793 端口）的鉴权密钥，
     # 所有 airflow 组件必须一致，否则 UI 看日志报 403 FORBIDDEN
     AIRFLOW__WEBSERVER__SECRET_KEY: "airflow-dev-secret-key-please-change-in-prod"
@@ -182,6 +183,13 @@ services:
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
+    healthcheck:
+      # minio 镜像极简（无 curl/wget/grep/cat），纯 shell 内建命令读 /proc/net/tcp
+      # 9000 端口 = 0x2328，LISTEN 状态 = 0A
+      test: ["CMD-SHELL", "while IFS= read -r l; do case \"$$l\" in *:2328*0A*) exit 0;; esac; done < /proc/net/tcp; exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -191,6 +199,11 @@ services:
       - "6379:6379" # 维表缓存：批 T+1 同步写，Flink Lookup Join 读
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
   clickhouse:
     image: clickhouse/clickhouse-server:24-alpine
     hostname: clickhouse
@@ -204,6 +217,12 @@ services:
         hard: 262144
     volumes:
       - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      # clickhouse-client 探活最可靠（走原生 9000 端口，不依赖 HTTP 8123）
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' | grep -q 1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   # FastAPI 服务层：实时查 StarRocks、离线查 ClickHouse（无状态，不挂卷）
   api:
@@ -214,6 +233,11 @@ services:
       - "8000:8000"              # FastAPI HTTP（浏览器/外部访问）
     environment:
       <<: *conn-env              # 容器内连 starrocks/clickhouse 用服务名
+      # /app：app 包所在目录（uvicorn app.main:app 依赖此路径）
+      # /opt：共享模块（shared.log 等）挂载点的父目录，使 shared/ 成为可 import 的包
+      PYTHONPATH: /app:/opt
+    volumes:
+      - ../shared:/opt/shared    # 共享模块挂载，开发热更
     depends_on:
       - starrocks
       - clickhouse
@@ -232,6 +256,12 @@ services:
     ports:
       - "8080:8080"               # Master Web UI
       - "7077:7077"               # Master RPC（worker 和 spark-submit 连这个）
+    healthcheck:
+      # spark-master 镜像带 curl，探活 Web UI 是否返回 200
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   spark-worker:
     <<: *spark-common
@@ -289,7 +319,10 @@ services:
     volumes:
       - ../airflow/dags:/opt/airflow/dags
       - ../batch:/opt/jobs             # 作业代码（SparkSubmitOperator 的 application 路径）
+      - ../generator:/opt/generator    # 每日造数脚本（generate section 的 BashOperator 在这跑）
+      - ../shared:/opt/shared          # 共享模块（shared.log）挂载
       - ../clickhouse/ddl:/opt/clickhouse/ddl:ro  # client 模式 driver 跑在本容器，ensure_table 要读 DDL
+      - airflow_logs:/opt/airflow/logs # 与 scheduler 共享日志，webserver 直接读本地日志（绕过 Airflow 2.9 log server DetachedInstanceError bug）
     command: airflow webserver
 
   airflow-scheduler:
@@ -298,6 +331,14 @@ services:
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+      minio:
+        condition: service_healthy     # 造数/批管道读写 parquet
+      redis:
+        condition: service_healthy     # sync_dim_redis 写维表缓存
+      clickhouse:
+        condition: service_healthy     # ods/dwd/dws/ads 写数仓
+      spark-master:
+        condition: service_healthy     # SparkSubmitOperator 提交作业
     environment:
       <<: *airflow-base-env
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -306,7 +347,10 @@ services:
     volumes:
       - ../airflow/dags:/opt/airflow/dags
       - ../batch:/opt/jobs
+      - ../generator:/opt/generator    # 每日造数脚本（LocalExecutor 任务实际在 scheduler 容器跑）
+      - ../shared:/opt/shared          # 共享模块（shared.log）挂载
       - ../clickhouse/ddl:/opt/clickhouse/ddl:ro  # client 模式 driver 跑在本容器，ensure_table 要读 DDL
+      - airflow_logs:/opt/airflow/logs # 与 webserver 共享日志，让 webserver 能直接读本地日志文件
     command: airflow scheduler
 
 
@@ -317,3 +361,4 @@ volumes:
   redis_data:
   clickhouse_data:
   postgres_data:
+  airflow_logs:              # webserver + scheduler 共享，webserver 直接读本地日志文件

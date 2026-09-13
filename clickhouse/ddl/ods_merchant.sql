@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS finance.ods_merchant
     merchant_id   String   NOT NULL COMMENT '商户ID',
     category      String   NOT NULL COMMENT '商户类目',
     region        String   NOT NULL COMMENT '商户所在地区',
-    risk_level    String   NOT NULL COMMENT '风险等级：LOW/MEDIUM/HIGH（RiskLevel 枚举）'
+    risk_level    String   NOT NULL COMMENT '风险等级：LOW/MEDIUM/HIGH（RiskLevel 枚举）',
+    status        String   NOT NULL COMMENT '状态：ACTIVE 存活 / DELETED 软删'
 )
 ENGINE = ReplacingMergeTree()
 ORDER BY merchant_id

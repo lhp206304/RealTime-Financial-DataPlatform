@@ -1,3 +1,7 @@
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
 import yaml
 import os
 from pathlib import Path
@@ -63,19 +67,27 @@ with DAG(
 ) as dag:
     for section, task_tables in config.items():
         for task_table in task_tables:
-            if task_table.get("bash_command"):
-                task= BashOperator(
-                    task_id=task_table["task_id"], 
-                    bash_command=f"python3 -m src.pipelines.{task_table['task_id']}",
-                    cwd="/opt/jobs",
+            if task_table.get("command"):
+                # 通用 Bash 任务（如 generator 造数）：命令和工作目录都在 yml 里声明
+                task = BashOperator(
+                    task_id=task_table["task_id"],
+                    bash_command=task_table["command"],
+                    cwd=task_table.get("cwd", "/opt/jobs"),
+                )
+            elif task_table.get("bash_command"):
+                # batch 内置纯 Python 任务（sync_dim_redis）：默认在 /opt/jobs 下跑
+                task = BashOperator(
+                    task_id=task_table["task_id"],
+                    bash_command=task_table["bash_command"],
+                    cwd=task_table.get("cwd", "/opt/jobs"),
                 )
             else:
-                task= SparkSubmitOperator(
-                    task_id=task_table["task_id"], 
+                task = SparkSubmitOperator(
+                    task_id=task_table["task_id"],
                     application=task_table["application"],
                     **common,
                 )
-            all_tasks[task_table["task_id"]] =task
+            all_tasks[task_table["task_id"]] = task
 # 3 动态生成任务依赖 
     for task_tables in config.values():
         for task_table in task_tables:
@@ -98,10 +110,8 @@ with DAG(
                 all_pre_section_tasks >> task
 
 if __name__ == "__main__":
-    print(type(config))
-    print(config)
-    print("***********\n")
+    logger.info("config type", config_type=type(config))
+    logger.info("config content", config=config)
     for task_tables in config.values():
         for task_table in task_tables:
-            print(task_table)
-            print("###########\n")
+            logger.info("task table", task_table=task_table)

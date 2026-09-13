@@ -3,6 +3,10 @@
 职责：DWS 商户日汇总 → 按 dt 窗口排名取 Top10 + 当日销售额占比 → 写 ClickHouse。
 调度：python -m src.pipelines.ads_merchant_top10 2026-09-04
 """
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
 import sys
 
 from pyspark.sql import DataFrame
@@ -52,7 +56,7 @@ def run(dt: str) -> None:
     overwrite_partition_to_clickhouse(spark, top10, TARGET_TABLE, dt)
 
     spark.stop()
-    print(f"ADS 商户Top10 {dt} 完成 → {TARGET_TABLE}")
+    logger.info("ADS 商户Top10 完成", dt=dt, table=TARGET_TABLE)
 
 
 if __name__ == "__main__":

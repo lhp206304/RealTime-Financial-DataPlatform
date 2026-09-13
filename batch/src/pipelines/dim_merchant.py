@@ -1,4 +1,6 @@
-
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
 
 from src.spark import get_spark_session
 from src.io.clickhouse_reader import read_from_clickhouse
@@ -29,7 +31,7 @@ def run(dt: str|None=None):
     df = validate(df)
     #第四步 写clickhouse
     overwrite_table_to_clickhouse(spark, df, TARGET_TABLE)
-    print(f"DIM 完成：{df.count()} 条 → {TARGET_TABLE}")
+    logger.info("DIM 商户完成", rows=df.count(), table=TARGET_TABLE)
     spark.stop()
 if __name__ == "__main__":
     run()

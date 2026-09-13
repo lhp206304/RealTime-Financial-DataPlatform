@@ -6,6 +6,10 @@
 注意：同环比/累计值需要多天数据，读 DWS 取「窗口最小依赖区间」[上月末, 当天]；
 build 输出含区间内所有天的行，写入前只保留当天行（writer 只清当天分区）。
 """
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
 import sys
 from datetime import date, timedelta
 
@@ -103,7 +107,7 @@ def run(dt: str) -> None:
     overwrite_partition_to_clickhouse(spark, ads_today, TARGET_TABLE, dt)
 
     spark.stop()
-    print(f"ADS 每日大盘 {dt} 完成 → {TARGET_TABLE}")
+    logger.info("ADS 每日大盘完成", dt=dt, table=TARGET_TABLE)
 
 
 if __name__ == "__main__":

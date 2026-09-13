@@ -3,6 +3,10 @@
 职责：DWD 宽表 → 按 客户+天 聚合（笔数/金额/均额）→ 校验 → 写 ClickHouse。
 调度：python -m src.pipelines.dws_customer_daily 2026-09-04
 """
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
 import sys
 
 from pyspark.sql import DataFrame
@@ -49,7 +53,7 @@ def run(dt: str) -> None:
     overwrite_partition_to_clickhouse(spark, dws, TARGET_TABLE, dt)
 
     spark.stop()
-    print(f"DWS 客户日汇总 {dt} 完成 → {TARGET_TABLE}")
+    logger.info("DWS 客户日汇总完成", dt=dt, table=TARGET_TABLE)
 
 
 if __name__ == "__main__":

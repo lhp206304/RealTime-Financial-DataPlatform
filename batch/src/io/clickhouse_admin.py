@@ -14,6 +14,9 @@ from pathlib import Path
 import clickhouse_connect
 
 from config.settings import settings
+from shared.log import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
 
 DDL_DIR = Path(__file__).resolve().parents[3] / "clickhouse" / "ddl"
 
@@ -32,7 +35,7 @@ def ensure_database() -> None:
     """建库（幂等）。"""
     client = get_client()
     client.command(f"CREATE DATABASE IF NOT EXISTS {settings.clickhouse_database}")
-    print(f"数据库 {settings.clickhouse_database} 已就绪")
+    logger.info("数据库已就绪", database=settings.clickhouse_database)
 
 
 def ensure_table(table: str) -> None:
@@ -58,7 +61,7 @@ def apply_ddl_file(sql_path: str | Path) -> None:
         stmt = stmt.strip()
         if stmt and not stmt.startswith("--"):
             client.command(stmt)
-    print(f"DDL 已执行：{sql_path.name}")
+    logger.info("DDL 已执行", file=sql_path.name)
 
 
 def apply_ddl_dir(ddl_dir: str | Path) -> None:
@@ -75,4 +78,4 @@ if __name__ == "__main__":
         apply_ddl_dir(p)
     else:
         apply_ddl_file(p)
-    print("全部 DDL 执行完成")
+    logger.info("全部 DDL 执行完成")

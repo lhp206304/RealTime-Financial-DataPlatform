@@ -57,6 +57,12 @@ class RiskLevel(str, Enum):
     HIGH = "HIGH"
 
 
+class DimStatus(str, Enum):
+    """维表实体状态：软删除标记（不物理删行）"""
+    ACTIVE = "ACTIVE"      # 存活：新交易可引用
+    DELETED = "DELETED"    # 已删除：仅保留历史，造数池排除
+
+
 # ---- 三张维度表 ----
 class DimCustomer(BaseModel):
     """客户维度"""
@@ -64,6 +70,7 @@ class DimCustomer(BaseModel):
     level: CustomerLevel
     region: str              # 注册地
     register_time: datetime  # 开户时间
+    status: DimStatus = DimStatus.ACTIVE   # 软删标记，新增默认 ACTIVE
 
 
 class DimAccount(BaseModel):
@@ -80,3 +87,4 @@ class DimMerchant(BaseModel):
     category: str            # 商户类别 (MCC)
     region: str
     risk_level: RiskLevel
+    status: DimStatus = DimStatus.ACTIVE   # 软删标记，新增默认 ACTIVE
