@@ -1,6 +1,6 @@
 """表任务：ODS 交易明细原样落地 → ClickHouse ods_transaction。
 
-职责：MinIO fact 桶原始交易 → 不加工（最多类型对齐）→ 写 ClickHouse。
+职责：MinIO transaction 桶原始交易 → 不加工（最多类型对齐）→ 写 ClickHouse。
 调度：python -m src.pipelines.ods_transaction 2026-09-04（不传日期 = 全量）
 """
 from shared.log import setup_logging, get_logger
@@ -35,9 +35,9 @@ def transform(df: DataFrame) -> DataFrame:
 
 
 def run(dt: str | None = None) -> None:
-    """任务入口：读 fact 桶 → 原样 → 校验 → 写 ods_transaction。"""
+    """任务入口：读 transaction 桶 → 原样 → 校验 → 写 ods_transaction。"""
     spark=get_spark_session("batch_ods_transaction")
-    raw = read_minio(spark, "fact", SOURCE_TABLE, dt)
+    raw = read_minio(spark, "transaction", SOURCE_TABLE, dt)
     raw_count = raw.count()
 
     ods = transform(raw)

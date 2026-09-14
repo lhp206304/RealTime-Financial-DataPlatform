@@ -7,14 +7,17 @@
 - **T+1 离线分析**：PySpark 数仓分层（ODS→DIM→DWD→DWS→ADS），客户画像与经营大盘
 - **统一查询服务**：FastAPI 按数据来源路由双 OLAP 引擎，一套 API 同时取实时与离线数据
 
-覆盖完整链路：数据生成 → 消息传输 → 流/批计算 → 双 OLAP 存储 → 数据服务。
+覆盖完整链路：数据生成 → 消息传输 → 流/批计算 → 双 OLAP 存储 → 数据服务。离线批链路由 **Airflow** 统一调度（每日自动造数 + 分层跑批）。
 
 ---
 
 ## 架构
 
 ```text
-离线（批处理层 T+1）
+离线（批处理层 T+1）—— 由 Airflow 每日自动调度
+  generator 每日造数（演进维度 + 造当天流水）
+        │
+        ▼
   MinIO Parquet ──► PySpark（ODS→DIM→DWD→DWS→ADS）──► ClickHouse
                                                         │ dim_* T+1 同步
                                                         ▼
@@ -50,127 +53,152 @@
 | 数据生成 | Python + Pydantic + confluent-kafka | 3.14 |
 | 消息队列 | Kafka（KRaft 模式，免 ZooKeeper，transaction topic 3 分区） | 4.3.1 |
 | 实时计算 | Flink SQL + Java UDF（Redis Lookup） | 1.20 |
-| 离线计算 | PySpark（local 模式，Spark Connector 写 ClickHouse） | 4.2 |
+| 离线计算 | PySpark（Spark Standalone 集群，Airflow SparkSubmitOperator 提交；手动调试可 local 模式） | 4.2 |
 | 实时 OLAP | StarRocks（Primary Key 模型，upsert 幂等） | 3.5 |
 | 离线 OLAP | ClickHouse（MergeTree / ReplacingMergeTree，toYYYYMM 月分区） | 24 |
 | 维表缓存 | Redis（Hash 存维度属性） | 7 |
-| 对象存储 | MinIO（S3 兼容，存 Parquet：fact / dim 两桶） | latest |
+| 对象存储 | MinIO（S3 兼容，数仓上游数据湖：master 主数据桶 / transaction 流水桶） | latest |
 | 查询服务 | FastAPI + Pydantic + SQLAlchemy + clickhouse-connect | — |
-| 部署 | 基础设施 8 服务 Docker Compose 一键启动；应用层（generator / batch / api）本地 venv 运行 | — |
+| 调度 | Airflow（LocalExecutor，YAML 驱动的动态 DAG，每日造数 + 分层跑批） | 2.9.3 |
+| 部署 | 全部服务 Docker Compose 一键启动（基础设施 + Spark + Airflow + api）；仅 Flink UDF 打包与实时流演示脚本在本地执行 | — |
 
 ---
 
 ## 快速复现
 
-> 部署形态：**基础设施容器化、应用层本地运行**。Kafka / StarRocks / Flink / MinIO / Redis / ClickHouse 跑在 Docker；数据生成、离线跑批、查询服务在宿主机各自的 Python venv 里跑。
+> 部署形态：**全量 Docker Compose 容器化**。Kafka / StarRocks / Flink / MinIO / Redis / ClickHouse / Spark / Airflow / api 全部跑在容器里；跑批与每日造数由 Airflow 在容器内执行，ClickHouse 表首次写入时自动幂等创建。
+> 本地只需做两件事：**首次打 Flink UDF jar**（需 JDK 17 + Maven）、**跑实时流演示** `send_realtime.py`（可选，喂 Flink 实时链路，需本地 Python venv）。
 
 ### ① 本地依赖（一次性准备）
 
 | 依赖 | 用途 | 安装 |
 |---|---|---|
-| Docker + Compose | 基础设施 8 服务 | Docker Desktop |
-| JDK 17 | PySpark JVM / Flink UDF 编译 | `brew install openjdk@17` |
-| Maven | UDF 打包 | `brew install maven` |
-| Python 3.14 | generator / batch / api 三个独立 venv | python.org 或 pyenv |
+| Docker + Compose | 全部 15 个服务（含 Spark / Airflow / api） | Docker Desktop |
+| DBeaver（可选） | 数据库 GUI，连 ClickHouse / StarRocks 看数据 | `brew install --cask dbeaver-community` |
+| JDK 17 + Maven | **仅首次**打 Flink UDF jar 用 | `brew install openjdk@17 maven` |
+| Python 3.14 | **仅跑实时流演示** `send_realtime.py` 时需要（可选） | python.org 或 pyenv |
 
+> **中间件本地零安装**：ClickHouse、StarRocks、MinIO、Kafka、Redis、Flink、Spark、Airflow、Postgres 全部由 Docker Compose 引用公共镜像，`up -d --build` 时本地没有就自动从 Docker Hub 拉取，无需在 macOS 上安装任何数据库或 MinIO 本体。MinIO 控制台直接用浏览器访问 `localhost:9001`（minioadmin / minioadmin），也不用装客户端。
 
-### ② 起基础设施
+**DBeaver 连接参数**（连的是 Docker 映射到宿主机的端口）：
+
+| 数据库 | DBeaver 选的驱动 | Host:Port | 账号 | 库 |
+|---|---|---|---|---|
+| ClickHouse | ClickHouse（DBeaver 24+ 官方驱动，走 HTTP） | `localhost:8123` | default / 空密码 | finance |
+| StarRocks | MySQL（StarRocks 兼容 MySQL 协议） | `localhost:9030` | root / 空密码 | finance |
+
+### ② 起全部服务
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
-验证：`docker ps` 看到 broker / starrocks / jobmanager / taskmanager / minio / redis / clickhouse 全部 Up；`init-kafka` 一次性容器自动建好 3 分区 topic `transaction`。
+验证：`docker ps` 看到 broker / starrocks / jobmanager / taskmanager / minio / redis / clickhouse / spark-master / spark-worker / airflow-webserver / airflow-scheduler / api 全部 Up；`init-kafka` 一次性容器自动建好 3 分区 topic `transaction`。
 
-### ③ 三个应用模块的环境（各一个 venv）
+> - Airflow Web UI：`http://localhost:8088`（admin / admin）。airflow-scheduler 会等 minio / redis / clickhouse / spark-master 的 healthcheck 通过后才启动。
+> - 查询服务 api 随全量启动直接可用：`http://localhost:8000/docs`（也可单独 `docker compose -f deploy/docker-compose.yml up -d api`）。
+> - MinIO 控制台：`http://localhost:9001`（minioadmin / minioadmin），在容器里运行，浏览器直接访问，无需本地安装。
+
+### ③ 首次铺底数据（容器内执行，无需本地 venv）
+
+全新环境先铺一次维度主数据和历史交易（之后由 Airflow 每日自动演进/造数）：
 
 ```bash
-# generator：造数（Pydantic + confluent-kafka）
-cd generator
-python3.14 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-# batch：离线跑批（PySpark 4.2）
-cd ../batch
-python3.14 -m venv .venv
-source setup_env.sh    # 一键激活 venv + JAVA_HOME + PYTHONPATH + PYSPARK_PYTHON（需先装 JDK 17）
-
-# api：查询服务（FastAPI）
-cd ../api
-python3.14 -m venv .venv && source .venv/bin/activate
-pip install fastapi "uvicorn[standard]" sqlalchemy pymysql clickhouse-connect
+# 在 airflow-scheduler 容器里跑（generator 已挂载到 /opt/generator，boto3 已装，MINIO_* 已注入）
+docker exec -w /opt/generator airflow-scheduler python3 build_dimensions.py     # 主数据 → master 桶
+docker exec -w /opt/generator airflow-scheduler python3 build_transactions.py   # 历史交易 → transaction 桶
 ```
 
-### ④ 造数（generator venv，宿主机）
+验证：MinIO 控制台（`localhost:9001`）能看到 `transaction/fact_transaction.parquet`、`master/*.parquet`。
+
+### ④ 建 StarRocks 表（仅实时链路 2 张，ClickHouse 表无需手动建）
+
+ClickHouse 的 11 张表由 batch writer 在首次写入前调 `ensure_table` 按 DDL **自动幂等创建**，无需手动执行。StarRocks 的物理表 Flink connector 不会自动建，需手动执行一次：
 
 ```bash
-cd generator && source .venv/bin/activate
-python build_dimensions.py      # 客户/账户/商户维表 → MinIO dim 桶
-python build_transactions.py    # 批量历史交易 → MinIO fact 桶（默认 10000 条）
-python send_realtime.py         # 实时交易流 → Kafka（持续发送，Ctrl+C 退出）
-```
+# 宿主机有 mysql 客户端
+mysql -h 127.0.0.1 -P 9030 -u root < starrocks/ddl/dws_realtime_agg.sql
+mysql -h 127.0.0.1 -P 9030 -u root < starrocks/ddl/late_transaction.sql
 
-验证：MinIO 控制台（`localhost:9001`）能看到 `fact/fact_transaction.parquet`、`dim/*.parquet`。
-
-### ⑤ 建表
-
-```bash
-# ClickHouse 11 张（ODS/DIM/DWD/DWS/ADS，走 HTTP 8123；batch venv）
-cd ../batch && source setup_env.sh
-python -m src.io.clickhouse_admin ../clickhouse/ddl
-
-# StarRocks 2 张（FE MySQL 协议 9030；宿主机 mysql 客户端）
-mysql -h 127.0.0.1 -P 9030 -u root < ../starrocks/ddl/dws_realtime_agg.sql
-mysql -h 127.0.0.1 -P 9030 -u root < ../starrocks/ddl/late_transaction.sql
+# 或在 starrocks 容器内执行（无需宿主机装 mysql）
+docker exec -i starrocks mysql -h 127.0.0.1 -P 9030 -u root < starrocks/ddl/dws_realtime_agg.sql
+docker exec -i starrocks mysql -h 127.0.0.1 -P 9030 -u root < starrocks/ddl/late_transaction.sql
 ```
 
 > 实时明细表 `dwd_transaction_online` 的表结构定义在 Flink Sink 连接器里（[flink/sql/kafka_to_starrocks.sql](flink/sql/kafka_to_starrocks.sql)）。
-> batch 的 writer 写入前会按 DDL 幂等建表（`ensure_table`），ClickHouse 部分手动预建可省略。
 
-### ⑥ 离线跑批（batch venv，按依赖序）
+### ⑤ 离线跑批
+
+**推荐方式：Airflow 自动调度（每日全链路）**
+
+在 Airflow Web UI（`localhost:8088`）触发 `warehouse_dynamic` DAG，或命令行：
+
+```bash
+# 手动触发当天的全链路（造数 → ODS → DIM → DWD → DWS → ADS → Redis）
+docker exec airflow-scheduler airflow dags trigger warehouse_dynamic
+```
+
+DAG 链路：`evolve_dimensions → generate_transactions → ods → dim → dwd → dws → ads → sync_dim_redis`，每日自动执行，任务间依赖由 DAG 声明。
+
+**手动方式（调试单表，全部在 spark-master 容器内执行）：**
 
 ```bash
 DT=$(date +%F)
-# 维表组（T+1 全量，无业务日期）
-python -m src.pipelines.ods_customer && python -m src.pipelines.dim_customer
-python -m src.pipelines.ods_merchant && python -m src.pipelines.dim_merchant
-python -m src.pipelines.sync_dim_redis        # 维表 → Redis Hash
+COMPOSE="docker compose -f ./deploy/docker-compose.yml exec -T spark-master"
+SUBMIT="/opt/spark/bin/spark-submit --master local[*]"
+
+# 维表组（T+1 全量，无业务日期；除 sync_dim_redis 外都走 spark-submit）
+$COMPOSE $SUBMIT src/pipelines/ods_customer.py
+$COMPOSE $SUBMIT src/pipelines/dim_customer.py
+$COMPOSE $SUBMIT src/pipelines/ods_merchant.py
+$COMPOSE $SUBMIT src/pipelines/dim_merchant.py
+$COMPOSE python3 -m src.pipelines.sync_dim_redis        # 纯 Python：维表 → Redis Hash
 
 # 事实链路（按业务日期逐层推进）
-python -m src.pipelines.ods_transaction $DT
-python -m src.pipelines.dwd_transaction $DT    # 清洗 + JOIN 维表打宽
-python -m src.pipelines.dws_customer_daily $DT
-python -m src.pipelines.dws_merchant_daily $DT
-python -m src.pipelines.ads_customer_profile $DT
-python -m src.pipelines.ads_daily_report $DT
-python -m src.pipelines.ads_merchant_top10 $DT
+$COMPOSE $SUBMIT src/pipelines/ods_transaction.py $DT
+$COMPOSE $SUBMIT src/pipelines/dwd_transaction.py $DT    # 清洗 + JOIN 维表打宽
+$COMPOSE $SUBMIT src/pipelines/dws_customer_daily.py $DT
+$COMPOSE $SUBMIT src/pipelines/dws_merchant_daily.py $DT
+$COMPOSE $SUBMIT src/pipelines/ads_customer_profile.py $DT
+$COMPOSE $SUBMIT src/pipelines/ads_daily_report.py $DT
+$COMPOSE $SUBMIT src/pipelines/ads_merchant_top10.py $DT
 ```
 
 验证：每个任务输出质量校验结果（行数对比 / NULL 率）；同一天重跑不产生重复数据（按 dt 分区覆盖写）。
 
-### ⑦ 构建 UDF 并重启 Flink（首次）
+### ⑥ 构建 UDF 并重启 Flink（首次）
 
 ```bash
-cd ../flink/udf && mvn package
+cd flink/udf && mvn package
 cp target/flink-udf-1.0.jar ../lib/
-docker compose -f ../../deploy/docker-compose.yml up -d jobmanager taskmanager
+docker compose -f deploy/docker-compose.yml up -d jobmanager taskmanager
 ```
 
-### ⑧ 提交 Flink 作业（容器内 SQL Client）
+### ⑦ 提交 Flink 作业（容器内 SQL Client）
 
 ```bash
 docker exec -i jobmanager ./bin/sql-client.sh -f /opt/flink/sql/kafka_to_starrocks.sql   # Job1：清洗+打宽
 docker exec -i jobmanager ./bin/sql-client.sh -f /opt/flink/sql/job2.sql                 # Job2：窗口聚合
 ```
 
-验证：Web UI（`localhost:8081`）两个作业 RUNNING，Checkpoint 周期性成功；`send_realtime.py` 持续发数后，StarRocks `dwd_transaction_online` / `dws_realtime_agg` 有数据且打宽字段非 NULL。
+验证：Web UI（`localhost:8081`）两个作业 RUNNING，Checkpoint 周期性成功。
 
-### ⑨ 启动查询服务（api venv，宿主机）
+### ⑧ 实时流演示（唯一需要本地 venv 的脚本，可选）
+
+Flink 作业需要实时数据喂入。`send_realtime.py` 连 `localhost:9092`（且 confluent-kafka 未装进容器镜像），在宿主机 venv 运行：
 
 ```bash
-cd ../api && source .venv/bin/activate
-uvicorn app.main:app --port 8000
+cd generator
+python3.14 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python send_realtime.py    # 每 0.5~2 秒造一条发 Kafka，Ctrl+C 优雅退出
 ```
+
+跑起来后 StarRocks `dwd_transaction_online` / `dws_realtime_agg` 开始有数据且打宽字段非 NULL。
+
+### ⑨ 验证查询服务（api 已随 compose 启动）
+
+api 容器在步骤②已启动（`finance-api:latest`，端口 8000），无需手动 uvicorn：
 
 ```bash
 curl http://localhost:8000/health
@@ -178,7 +206,7 @@ curl http://localhost:8000/transactions/realtime
 curl http://localhost:8000/customers/C12050/full-profile   # 实时统计 + 离线画像一次返回
 ```
 
-接口文档（OpenAPI 自动生成）：`http://localhost:8000/docs`
+接口文档（OpenAPI 自动生成）：`http://localhost:8000/docs`。单独重启：`docker compose -f deploy/docker-compose.yml restart api`。
 
 ---
 
@@ -186,9 +214,11 @@ curl http://localhost:8000/customers/C12050/full-profile   # 实时统计 + 离�
 
 | 模块 | 职责 | 文档 |
 |---|---|---|
-| [generator/](generator/) | 模拟数据生成：维表 + 历史交易落 MinIO，实时流发 Kafka | [generator/README.md](generator/README.md) |
+| [generator/](generator/) | 模拟数据生成：主数据 + 历史交易落 MinIO，实时流发 Kafka；每日维度演进（增/改/软删）| [generator/README.md](generator/README.md) |
+| [airflow/](airflow/) | 调度编排：YAML 驱动的动态 DAG，每日造数 + 分层跑批 | — |
 | [flink/](flink/) | 实时链路：Job1 清洗打宽双写、Job2 窗口聚合；Java UDF 源码 | [flink/README.md](flink/README.md) |
 | [batch/](batch/) | 离线链路：PySpark 数仓分层 + 维表同步 Redis | [batch/README.md](batch/README.md) |
+| [shared/](shared/) | 共享模块：structlog + 标准 logging 桥接配置，供 api/batch/airflow 复用 | — |
 | [clickhouse/](clickhouse/) | 离线 OLAP 建表 DDL（11 张） | [clickhouse/ddl/](clickhouse/ddl/) |
 | [starrocks/](starrocks/) | 实时 OLAP 建表 DDL（聚合表 + 迟到明细表） | [starrocks/README.md](starrocks/README.md) |
 | [api/](api/) | 查询服务：双数据源路由（StarRocks / ClickHouse） | [api/README.md](api/README.md) |
@@ -232,7 +262,7 @@ curl http://localhost:8000/customers/C12050/full-profile   # 实时统计 + 离�
 |---|---|---|
 | V1 | 实时主链路（Generator→Kafka→Flink→StarRocks→FastAPI） | ✅ 完成 |
 | V2 | 离线分层 + 维表打宽 + Flink 进阶（Watermark / Checkpoint / 窗口），演进为 Lambda 双引擎 | ✅ 完成 |
-| V3 | 工程化 + Airflow 调度（12 个 pipeline 已按 task 组织，DAG 待落地） | 🔨 进行中 |
+| V3 | 工程化 + Airflow 调度（YAML 动态 DAG + 每日造数 + 分层跑批，已接入 generator 每日演进） | ✅ 完成 |
 | V4 | 数据质量模块（独立 DQ 规则 + 质量报告） | 规划中 |
 | V5 | 风险模型（特征工程 → 训练 → Flink 实时评分） | 规划中 |
 | V6 | Cloud（对象存储迁移 + CI/CD） | 规划中 |

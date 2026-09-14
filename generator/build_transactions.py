@@ -46,7 +46,7 @@ from schema import Currency, Transaction, TransactionType   # noqa: E402
 # 数据生成模式：batch=批量补历史 / realtime=实时流 / day=日更造当天
 GenMode = Literal["batch", "realtime", "day"]
 
-# 交易事实表在 fact 桶里的对象名
+# 交易事实表在 transaction 桶里的对象名
 KEY_TRANSACTION = "fact_transaction.parquet"
 
 
@@ -162,14 +162,14 @@ def save_transactions_to_minio(txns: list[Transaction], override: bool = False) 
     df_new = pd.DataFrame([t.model_dump() for t in txns])   # 模型 → dict → DataFrame
 
     # put_object 是覆盖写，追加 = 读旧数据 + concat + 写回
-    old = read_parquet(client, KEY_TRANSACTION, bucket=settings.minio_bucket_fact)
+    old = read_parquet(client, KEY_TRANSACTION, bucket=settings.minio_bucket_transaction)
     df = df_new if old is None or override else pd.concat([old, df_new], axis=0, ignore_index=True)
 
-    write_parquet(client, df, KEY_TRANSACTION, bucket=settings.minio_bucket_fact)
+    write_parquet(client, df, KEY_TRANSACTION, bucket=settings.minio_bucket_transaction)
     logger.info(
         "写入 MinIO 完成",
         mode="覆盖" if override else "追加",
-        bucket=settings.minio_bucket_fact,
+        bucket=settings.minio_bucket_transaction,
         key=KEY_TRANSACTION,
         new_rows=len(df_new),
         total_rows=len(df),
@@ -186,7 +186,7 @@ def save_day_transactions_to_minio(txns: list[Transaction], ds: str) -> None:
     df_new = pd.DataFrame([t.model_dump() for t in txns])
     target_day = datetime.fromisoformat(ds).date()
 
-    old = read_parquet(client, KEY_TRANSACTION, bucket=settings.minio_bucket_fact)
+    old = read_parquet(client, KEY_TRANSACTION, bucket=settings.minio_bucket_transaction)
     if old is None:
         df = df_new
     else:
@@ -195,7 +195,7 @@ def save_day_transactions_to_minio(txns: list[Transaction], ds: str) -> None:
         dropped = len(old) - len(kept)
         df = pd.concat([kept, df_new], axis=0, ignore_index=True)
 
-    write_parquet(client, df, KEY_TRANSACTION, bucket=settings.minio_bucket_fact)
+    write_parquet(client, df, KEY_TRANSACTION, bucket=settings.minio_bucket_transaction)
     logger.info(
         "当日流水幂等写回完成",
         ds=ds,

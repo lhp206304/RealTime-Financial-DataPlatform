@@ -32,6 +32,16 @@ GET /customers/{id}/full-profile         # 流批汇聚：实时统计 + 离线�
 
 ## 启动与测试
 
+### 方式 1：Docker 容器（推荐，随 compose 一起起）
+
+```bash
+# 全量启动时已包含 api；单独启动/重启：
+docker compose -f ../deploy/docker-compose.yml up -d api
+# 容器自带 healthcheck（探活 /health），端口 8000，连接信息由 conn-env 环境变量注入
+```
+
+### 方式 2：本地 venv（开发调试，热重载）
+
 ```bash
 # 1. 激活虚拟环境
 cd /Users/walterlee/Project/RealTime-Financial-DataPlatform/api
@@ -40,8 +50,11 @@ source .venv/bin/activate
 # 2. 启动服务（二选一）
 uvicorn app.main:app --reload --port 8000      # 方式 1：uvicorn 热重载（推荐开发用）
 python -m app.main                             # 方式 2：直接跑（无热重载）
+```
 
-# 3. 测试接口
+### 测试接口（两种方式相同）
+
+```bash
 # 浏览器打开 API 文档（自动生成）
 open http://localhost:8000/docs
 

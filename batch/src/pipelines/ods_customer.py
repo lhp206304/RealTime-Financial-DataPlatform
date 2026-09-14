@@ -1,7 +1,7 @@
 
 """表任务：ODS 客户维度原样落地 → ClickHouse ods_customer。
 
-职责：MinIO dim 桶 dim_customer.parquet → 类型对齐 + 校验 → 写 ClickHouse（整表覆盖）。
+职责：MinIO master 桶 dim_customer.parquet → 类型对齐 + 校验 → 写 ClickHouse（整表覆盖）。
 调度：python -m src.pipelines.ods_customer
 """
 from shared.log import setup_logging, get_logger
@@ -41,7 +41,7 @@ def check(df: DataFrame) -> None:
 
 def run(dt: str | None = None) -> None:
     spark = get_spark_session("batch_ods_customer")
-    raw = read_minio(spark, "dim", SOURCE_TABLE)   # 维表全量读，不传 dt
+    raw = read_minio(spark, "master", SOURCE_TABLE)   # 主数据全量读，不传 dt
     raw_count = raw.count()
 
     ods = transform(raw)

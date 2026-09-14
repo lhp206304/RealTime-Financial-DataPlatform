@@ -14,14 +14,14 @@ def main():
         print("=== 1. SparkSession 启动成功 ===")
         print("Spark version:", spark.version)
 
-        # 2. 读 fact 桶交易数据
-        txns = read_minio(spark, "fact", "fact_transaction")
+        # 2. 读 transaction 桶交易数据
+        txns = read_minio(spark, "transaction", "fact_transaction")
         print("=== 2. MinIO fact_transaction 读成功 ===")
         print("交易行数:", txns.count())
         txns.printSchema()
 
-        # 3. 读 dim 桶客户维表
-        cust = read_minio(spark, "dim", "dim_customer")
+        # 3. 读 master 桶客户主数据
+        cust = read_minio(spark, "master", "dim_customer")
         print("=== 3. MinIO dim_customer 读成功 ===")
         print("客户行数:", cust.count())
         cust.show(3)

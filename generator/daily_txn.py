@@ -1,4 +1,4 @@
-"""每日流水造数入口（Airflow 调度）：用 ACTIVE 维度池造 ds 当天交易，幂等写回 fact 桶。
+"""每日流水造数入口（Airflow 调度）：用 ACTIVE 维度池造 ds 当天交易，幂等写回 transaction 桶。
 
 用法：
     python3 daily_txn.py 2026-09-13 --count 5000

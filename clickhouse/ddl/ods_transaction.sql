@@ -1,4 +1,4 @@
--- ODS 交易明细表：MinIO fact 桶原始交易原样落地
+-- ODS 交易明细表：MinIO transaction 桶原始交易原样落地
 --
 -- 引擎：MergeTree（明细 append，写入侧 DELETE PARTITION 再 append 保证幂等）
 -- 分区：toYYYYMM(dt)，按月分区（比按天分区目录数少，管理方便）

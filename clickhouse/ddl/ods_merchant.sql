@@ -1,4 +1,4 @@
--- ODS 商户维度贴源表：MinIO dim 桶 dim_merchant.parquet 原样落地
+-- ODS 商户主数据贴源表：MinIO master 桶 dim_merchant.parquet 原样落地
 --
 -- 引擎：ReplacingMergeTree（无分区维表，TRUNCATE 整刷，ORDER BY 唯一键去重）
 -- 分区：不分区（维表全量整刷，数据量小）

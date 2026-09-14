@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     minio_endpoint: str
     minio_access_key: str
     minio_secret_key: str
-    minio_bucket_dim: str      # 维度表桶：dim_customer.parquet / dim_merchant.parquet
-    minio_bucket_fact: str     # 事实表桶：fact_transaction.parquet（历史交易）
+    minio_bucket_master: str       # 主数据桶：dim_customer.parquet / dim_merchant.parquet
+    minio_bucket_transaction: str  # 交易流水桶：fact_transaction.parquet（历史交易）
 
     # ---- ClickHouse（离线 OLAP 汇聚层，PySpark T+1 写入）----
     clickhouse_host: str

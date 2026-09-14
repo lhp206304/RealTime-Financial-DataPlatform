@@ -37,13 +37,13 @@ from schema import (   # noqa: E402
     RiskLevel,
 )
 
-# 三张维表在 dim 桶里的对象名（Parquet 文件）
+# 三张主数据表在 master 桶里的对象名（Parquet 文件）
 KEY_CUSTOMER = "dim_customer.parquet"
 KEY_ACCOUNT = "dim_account.parquet"
 KEY_MERCHANT = "dim_merchant.parquet"
 _DIM_KEYS = (KEY_CUSTOMER, KEY_ACCOUNT, KEY_MERCHANT)
 
-# 每日演进前的快照前缀（同在 dim 桶）：history/dt=2026-09-13/dim_customer.parquet
+# 每日演进前的快照前缀（同在 master 桶）：history/dt=2026-09-13/dim_customer.parquet
 _SNAPSHOT_PREFIX = "history/dt={ds}/"
 
 _REGIONS = ["北京", "上海", "广州", "深圳", "杭州", "成都"]
@@ -65,7 +65,7 @@ def s3_client():
 
 
 # ---- 写 / 读 MinIO ----
-def read_parquet(client, key: str, bucket: str = settings.minio_bucket_dim) -> pd.DataFrame | None:
+def read_parquet(client, key: str, bucket: str = settings.minio_bucket_master) -> pd.DataFrame | None:
     """从 MinIO 读一个 Parquet 回 DataFrame；文件不存在返回 None。"""
     try:
         obj = client.get_object(Bucket=bucket, Key=key)
@@ -74,7 +74,7 @@ def read_parquet(client, key: str, bucket: str = settings.minio_bucket_dim) -> p
         return None
 
 
-def write_parquet(client, df: pd.DataFrame, key: str, bucket: str = settings.minio_bucket_dim) -> None:
+def write_parquet(client, df: pd.DataFrame, key: str, bucket: str = settings.minio_bucket_master) -> None:
     """把 DataFrame 写入 MinIO（put_object 是覆盖写）。"""
     # 没有 bucket 就创建
     existing = {b["Name"] for b in client.list_buckets()["Buckets"]}
@@ -327,7 +327,7 @@ def _snapshot_prefix(ds: str) -> str:
 
 def _object_exists(client, key: str) -> bool:
     try:
-        client.head_object(Bucket=settings.minio_bucket_dim, Key=key)
+        client.head_object(Bucket=settings.minio_bucket_master, Key=key)
         return True
     except Exception:
         return False
@@ -343,7 +343,7 @@ def list_snapshot_days(client) -> list[str]:
     days: list[str] = []
     token = None
     while True:
-        kwargs = {"Bucket": settings.minio_bucket_dim, "Prefix": "history/", "Delimiter": "/"}
+        kwargs = {"Bucket": settings.minio_bucket_master, "Prefix": "history/", "Delimiter": "/"}
         if token:
             kwargs["ContinuationToken"] = token
         resp = client.list_objects_v2(**kwargs)
@@ -359,9 +359,9 @@ def snapshot_dimensions(client, ds: str) -> None:
     for key in _DIM_KEYS:
         if _object_exists(client, key):
             client.copy_object(
-                Bucket=settings.minio_bucket_dim,
+                Bucket=settings.minio_bucket_master,
                 Key=f"{_snapshot_prefix(ds)}{key}",
-                CopySource={"Bucket": settings.minio_bucket_dim, "Key": key},
+                CopySource={"Bucket": settings.minio_bucket_master, "Key": key},
             )
     logger.info("维度快照完成", ds=ds)
 
@@ -372,9 +372,9 @@ def restore_snapshot(client, ds: str) -> None:
         snap_key = f"{_snapshot_prefix(ds)}{key}"
         if _object_exists(client, snap_key):
             client.copy_object(
-                Bucket=settings.minio_bucket_dim,
+                Bucket=settings.minio_bucket_master,
                 Key=key,
-                CopySource={"Bucket": settings.minio_bucket_dim, "Key": snap_key},
+                CopySource={"Bucket": settings.minio_bucket_master, "Key": snap_key},
             )
     logger.info("维度快照恢复完成", ds=ds)
 

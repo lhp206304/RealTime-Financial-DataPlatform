@@ -27,8 +27,8 @@
                                  │ 读 Parquet                   
     ┌────────────────────────────▼────────────────────────────┐
     │          MinIO（数据湖，原始数据由 generator/ 造）         │
-    │  fact 桶： fact_transaction.parquet       （历史交易事实）│
-    │  dim 桶：  dim_customer.parquet           （客户维表）    │
+    │  transaction 桶： fact_transaction.parquet （历史交易流水）│
+    │  master 桶：     dim_customer.parquet      （客户主数据）  │
     │           dim_merchant.parquet            （商户维表）    │
     └─────────────────────────────────────────────────────────┘
 ```
@@ -37,11 +37,11 @@
 
 ```
 【generator/ 目录 —— 数据生产，不属于 batch】
-build_dimensions.py    ──→ MinIO dim 桶   造维表（先生成）
-build_transactions.py  ──→ MinIO fact 桶  批量造历史交易（ID 取自维表池）
+build_dimensions.py    ──→ MinIO master 桶       造主数据（先生成）
+build_transactions.py  ──→ MinIO transaction 桶  批量造历史交易（ID 取自主数据池）
                                    ↓
 【batch/ 目录 —— Spark 分层加工，一张表 = src/pipelines/ 下一个模块】
-步骤5 ods_transaction.py    fact/dim → ODS        原样落地 ClickHouse
+步骤5 ods_transaction.py    master/transaction → ODS  原样落地 ClickHouse
 步骤5 dwd_transaction.py    ODS → 清洗 + JOIN 维表打宽 → DWD
 步骤5 dws_customer_daily.py  DWD → 按客户+天聚合 → DWS
 步骤5 dws_merchant_daily.py  DWD → 按商户+天聚合 → DWS
@@ -155,16 +155,14 @@ environment:
 
 ### 步骤 0：准备原始数据（在 generator/ 目录，不在 batch）
 
-batch 只读数不造数。跑批前先确保 MinIO 的 dim / fact 桶有数据：
+batch 只读数不造数。跑批前先确保 MinIO 的 master / transaction 桶有数据。首次铺底直接在 airflow-scheduler 容器执行（generator 已挂载、boto3 已装，无需本地 venv）：
 
 ```bash
-cd ../generator
-source .venv/bin/activate          # generator 有自己的 venv
-python build_dimensions.py         # 写 MinIO dim 桶（维表，先生成）
-python build_transactions.py       # 批量造历史交易 → 写 MinIO fact 桶（默认 10000 条）
+docker exec -w /opt/generator airflow-scheduler python3 build_dimensions.py     # 写 master 桶（主数据，先生成）
+docker exec -w /opt/generator airflow-scheduler python3 build_transactions.py   # 批量造历史交易 → transaction 桶
 ```
 
-产出：`dim/dim_customer.parquet`、`dim/dim_merchant.parquet`、`fact/fact_transaction.parquet`。
+产出：master 桶 `dim_customer.parquet`、`dim_merchant.parquet`，transaction 桶 `fact_transaction.parquet`。
 
 ### 步骤 3：PySpark 读 MinIO（冒烟验证）
 
@@ -266,12 +264,14 @@ $COMPOSE /opt/spark/bin/spark-submit --master local[*] src/pipelines/ads_daily_r
 echo "全链路完成"
 ```
 
-V3/V4 上 Airflow 后，**每个 pipelines 模块就是一个 task**（BashOperator 跑模块，或 PythonOperator 直接 import `run` 并传入业务日期 `{{ ds }}`），任务间依赖在 DAG 里声明：
+V3 已上线 Airflow，**每个 pipelines 模块就是一个 task**（SparkSubmitOperator 提交 `spark-submit`，纯 Python 任务如 sync_dim_redis 用 BashOperator），任务间依赖在 DAG 的 `warehouse_tables.yml` 里声明：
 
 ```python
-# dags/batch_daily.py（未来 V3/V4，不在 batch 目录内）
-ods >> dwd >> [dws_customer, dws_merchant] >> [ads_profile, ads_report] >> sync_redis
+# airflow/dags/config/warehouse_tables.yml（YAML 驱动动态 DAG）
+# generate → ods → dim → dwd → dws → ads → sync
 ```
+
+Airflow 还会在每日跑批前调用 generator 的 `daily_evolve.py`（演进维度）和 `daily_txn.py`（造当天流水），实现"造数 + 加工"全链路自动调度。
 
 ***
 
@@ -372,8 +372,8 @@ def test_clean_filters_negative_amount(spark):
 
 | 文件 / 模块                                                         | v2.md checklist 步骤                          |
 | --------------------------------------------------------------- | ------------------------------------------- |
-| `generator/build_dimensions.py`                                 | 步骤 2 前置：造维表 → MinIO dim 桶（主数据先行）            |
-| `generator/build_transactions.py`                               | 步骤 1：批量造历史交易 → MinIO fact 桶                 |
+| `generator/build_dimensions.py`                                 | 步骤 2 前置：造主数据 → MinIO master 桶（主数据先行）          |
+| `generator/build_transactions.py`                               | 步骤 1：批量造历史交易 → MinIO transaction 桶         |
 | `src/spark.py` + `src/io/minio_reader.py`                       | 步骤 3：PySpark 读 MinIO                        |
 | `clickhouse/ddl/`（上级目录）                                         | 步骤 4：建分层表（writer 写入前也会 ensure\_table 幂等自动建） |
 | `src/pipelines/ods_transaction.py`                              | 步骤 5：ODS → ClickHouse                       |

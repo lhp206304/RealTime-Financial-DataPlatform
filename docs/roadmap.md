@@ -42,15 +42,21 @@ Python Generator → Kafka → Flink → StarRocks → FastAPI
 
 ---
 
-## V3 —— 工程化 + Airflow 调度【当前阶段】
+## V3 —— 工程化 + Airflow 调度【✅ 已完成】
 
-1. **Python 工程化**：Pydantic、pytest、logging、配置管理、异常处理、Docker 化（部分已随 V2 落地）
-2. **Airflow 调度落地**（离线链路从手工跑批改为定时调度）：
-   - 配置说明见 [checklists/v3-airflow.md](./checklists/v3-airflow.md)（部署方式、DAG 定义、环境变量、backfill、重试告警、前置检查）
-   - `src/pipelines/` 一个模块 = 一张表 = 一个 task，`run(dt)` 已支持业务日期参数（DAG 里传 `{{ ds }}`），无需改作业代码
-   - 依赖 DAG：维表组 `ods_customer/ods_merchant → dim_customer/dim_merchant → sync_dim_redis`；事实链路 `ods_transaction → dwd_transaction → [dws_customer_daily, dws_merchant_daily] → [ads_customer_profile, ads_daily_report, ads_merchant_top10]`（dwd 前需维表组就绪）
-   - Airflow 部署（docker-compose 加服务或 standalone），T+1 schedule（如每日凌晨），支持历史回补 backfill
-   - 任务级失败重试、告警；每层作业的前置依赖检查（上游当天分区有数据才跑）
+1. **Python 工程化**：Pydantic、pytest、配置管理（连接参数全部走环境变量、无默认值）、Docker 化
+   - 新增 `shared/` 共享模块：structlog + 标准 logging 桥接（`setup_logging()` / `get_logger()`），api / batch / airflow 统一结构化 JSON 日志
+2. **Airflow 调度落地**（离线链路从手工跑批改为定时调度，docker-compose 部署）：
+   - **YAML 驱动的动态 DAG**：`airflow/dags/warehouse_dynamic.py` 读 `config/warehouse_tables.yml` 自动生成任务，加表 = 改 YAML，DAG 代码不动
+   - `src/pipelines/` 一个模块 = 一张表 = 一个 task，`run(dt)` 接收业务日期（DAG 传 `{{ ds }}`），作业代码零改动；Spark 作业走 SparkSubmitOperator（standalone master），纯 Python 任务走 BashOperator
+   - **每日造数接入**：DAG 链路为 `evolve_dimensions → generate_transactions → ods → dim → dwd → dws → ads → sync_dim_redis`，造数和加工在同一条 DAG 里按日推进
+   - generator 支持每日维度演进（新增/更新/软删 customer、merchant）与当日流水生成；软删除用 `status(ACTIVE/DELETED)` 不删行，新流水只引用 ACTIVE 实体
+   - **幂等重跑**：演进前快照备份到 master 桶 `history/dt={ds}/`，重跑先恢复再演进；流水按 `seed(ds)` 生成并剔除同 ds 旧行
+   - T+1 schedule、历史回补（`airflow dags trigger -e {date}`）、任务级失败重试（默认 retries=2）
+   - **基础设施就绪保障**：minio/redis/clickhouse/spark-master 配 healthcheck，airflow-scheduler `depends_on: service_healthy`；webserver/scheduler 共享日志卷规避 Airflow 2.9 log server bug
+   - 配置说明见 [checklists/v3-airflow.md](./checklists/v3-airflow.md)
+
+> 待补：每层作业的上游分区前置依赖检查（现由 quality 校验兜底）、任务失败外部告警（飞书/Slack webhook）。
 
 ---
 
@@ -92,7 +98,7 @@ StarRocks / ClickHouse → Go API       （双数据源 + 连接池 + context �
 
 ## 技术栈（最终，控制范围）
 
-核心：**Python / SQL / Kafka / Flink / Spark / PySpark / StarRocks / ClickHouse / FastAPI / Docker / Cloud**
+核心：**Python / SQL / Kafka / Flink / Spark / PySpark / StarRocks / ClickHouse / Redis / MinIO / Airflow / FastAPI / Docker / Cloud**
 
 Go 为可选并行实现（V7 阶段引入）。
 
