@@ -45,3 +45,4 @@ target/
 # 和 test/ 等价，写法更啰嗦
 # test/ 只匹配单数 test，不影响 batch/tests/（正式测试目录，复数）
 test/
+GUIDE.md

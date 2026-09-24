@@ -248,6 +248,20 @@ services:
       timeout: 3s
       retries: 5
 
+  # Go API 服务层（新）：实时查 StarRocks、离线查 ClickHouse（无状态，不挂卷）
+  go-api:
+    build: ../go-api               # 读 go-api/Dockerfile（多阶段，go 1.27 + distroless）
+    image: go-api:latest
+    container_name: go-api
+    ports:
+      - "8001:8001"                # Go API HTTP（浏览器/外部访问）
+    environment:
+      <<: *conn-env                # 与 api / spark / airflow 共用同一套连接配置
+    depends_on:
+      - starrocks
+      - clickhouse
+    # distroless 运行镜像无 shell/curl，容器内 healthcheck 无法实现；
+    # depends_on 仅保证启动顺序，实际就绪靠服务自身启动日志确认
 
   spark-master:
     <<: *spark-common
