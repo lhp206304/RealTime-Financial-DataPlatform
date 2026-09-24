@@ -66,15 +66,11 @@
 | 离线 PySpark | Python | 一致 |
 | 调度 Airflow | Python（YAML 驱动动态 DAG） | DAG 读 `warehouse_tables.yml` 生成任务，加表只改配置 |
 
-### Go 作为可选并行实现（见 roadmap 的 V7）
+### Go 作为可选并行实现（见 roadmap 的 V4）
 
-Go 不进入主链路。链路稳定后，可用 Go **重写 generator 和 API** 作为并行实现：
+Go 不进入主链路。链路稳定后，用 Go **重写查询 API** 作为并行实现（已完成）：
 
-- 不改变主链路（Python 版仍是主体），Go 版独立部署验证
-- 覆盖 Go 高并发场景：goroutine 数量控制、channel 背压、连接池、context 超时、优雅关闭
+- 不改变主链路（Python 版仍是主体），Go 版独立部署（端口 8001）
+- 覆盖 Go 高并发场景：goroutine 数量控制、连接池、context 超时、优雅关闭
 
 ---
-
-## Cloud 选型
-
-待定

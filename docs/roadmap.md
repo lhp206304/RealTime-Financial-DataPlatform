@@ -60,45 +60,23 @@ Python Generator → Kafka → Flink → StarRocks → FastAPI
 
 ---
 
-## V4 —— 数据质量
+## V4 —— Go 重写查询 API（高并发，已完成）
 
-独立 DQ 模块：NULL / 重复 / 非法金额 / 非法时间 / 缺失 ID / Schema 错误 + 质量报告。
-
----
-
-## V5 —— AI / 算法
+主链路稳定后，用 **Go 重写查询 API**（独立并行实现，接口契约与 Python 版 `api/` 一致）：
 
 ```text
-历史数据 → PySpark 特征工程 → Scikit-learn → 风险模型 → Flink 实时风险评分
-```
-
-从 Isolation Forest 入手。重点是「数据 → 特征 → 模型 → 评价 → 应用」，不是数学推导。
-
----
-
-## V6 —— Cloud
-
-Cloudflare R2 + CI/CD (GitHub Actions) + 云部署。最后做。
-
----
-
-## V7 —— Go 并行实现（高并发）
-
-主链路稳定后，用 **Go 重写 generator 和 API**，作为独立并行实现：
-
-```text
-Go Generator → Kafka                  （goroutine + channel 并发生产）
 StarRocks / ClickHouse → Go API       （双数据源 + 连接池 + context 超时 + 优雅关闭）
 ```
 
-- 不改变主链路（Python 版仍是主体），Go 版独立部署
-- 覆盖：goroutine 数量控制、channel 背压、连接池、context 取消、优雅退出
+- 不改变主链路（Python 版仍是主体），Go 版独立部署（端口 8001）
+- 覆盖：goroutine 数量控制、连接池、context 取消、优雅退出
+- 细节见 [go-api/README.md](../go-api/README.md)
 
 ---
 
 ## 技术栈（最终，控制范围）
 
-核心：**Python / SQL / Kafka / Flink / Spark / PySpark / StarRocks / ClickHouse / Redis / MinIO / Airflow / FastAPI / Docker / Cloud**
+核心：**Python / SQL / Kafka / Flink / Spark / PySpark / StarRocks / ClickHouse / Redis / MinIO / Airflow / FastAPI / Docker**
 
-Go 为可选并行实现（V7 阶段引入）。
+Go 为可选并行实现（V4 阶段引入）。
 

@@ -32,7 +32,7 @@
                                                         ▼
                                                    StarRocks
                                                         │
-服务层：FastAPI（按表来源路由：实时表→StarRocks / 离线表→ClickHouse）
+服务层：FastAPI + go-api（按表来源路由：实时表→StarRocks / 离线表→ClickHouse）
 ```
 
 ### 选型理由
@@ -59,6 +59,7 @@
 | 维表缓存 | Redis（Hash 存维度属性） | 7 |
 | 对象存储 | MinIO（S3 兼容，数仓上游数据湖：master 主数据桶 / transaction 流水桶） | latest |
 | 查询服务 | FastAPI + Pydantic + SQLAlchemy + clickhouse-connect | — |
+| 查询服务（Go） | Go 1.27 + Chi + sqlx + clickhouse-go/v2 | 1.27 |
 | 调度 | Airflow（LocalExecutor，YAML 驱动的动态 DAG，每日造数 + 分层跑批） | 2.9.3 |
 | 部署 | 全部服务 Docker Compose 一键启动（基础设施 + Spark + Airflow + api）；仅 Flink UDF 打包与实时流演示脚本在本地执行 | — |
 
@@ -93,10 +94,11 @@
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
-验证：`docker ps` 看到 broker / starrocks / jobmanager / taskmanager / minio / redis / clickhouse / spark-master / spark-worker / airflow-webserver / airflow-scheduler / api 全部 Up；`init-kafka` 一次性容器自动建好 3 分区 topic `transaction`。
+验证：`docker ps` 看到 broker / starrocks / jobmanager / taskmanager / minio / redis / clickhouse / spark-master / spark-worker / airflow-webserver / airflow-scheduler / api / go-api 全部 Up；`init-kafka` 一次性容器自动建好 3 分区 topic `transaction`。
 
 > - Airflow Web UI：`http://localhost:8088`（admin / admin）。airflow-scheduler 会等 minio / redis / clickhouse / spark-master 的 healthcheck 通过后才启动。
-> - 查询服务 api 随全量启动直接可用：`http://localhost:8000/docs`（也可单独 `docker compose -f deploy/docker-compose.yml up -d api`）。
+> - Python 查询服务 api：`http://localhost:8000/docs`（也可单独 `docker compose -f deploy/docker-compose.yml up -d api`）。
+> - Go 查询服务 go-api：`http://localhost:8001/health`（也可单独 `docker compose -f deploy/docker-compose.yml up -d go-api`）。
 > - MinIO 控制台：`http://localhost:9001`（minioadmin / minioadmin），在容器里运行，浏览器直接访问，无需本地安装。
 
 ### ③ 首次铺底数据（容器内执行，无需本地 venv）
@@ -196,9 +198,9 @@ python send_realtime.py    # 每 0.5~2 秒造一条发 Kafka，Ctrl+C 优雅退�
 
 跑起来后 StarRocks `dwd_transaction_online` / `dws_realtime_agg` 开始有数据且打宽字段非 NULL。
 
-### ⑨ 验证查询服务（api 已随 compose 启动）
+### ⑨ 验证查询服务（两个 API 随 compose 启动）
 
-api 容器在步骤②已启动（`finance-api:latest`，端口 8000），无需手动 uvicorn：
+Python 版 api 容器在步骤②已启动（`finance-api:latest`，端口 8000）：
 
 ```bash
 curl http://localhost:8000/health
@@ -207,6 +209,16 @@ curl http://localhost:8000/customers/C12050/full-profile   # 实时统计 + 离�
 ```
 
 接口文档（OpenAPI 自动生成）：`http://localhost:8000/docs`。单独重启：`docker compose -f deploy/docker-compose.yml restart api`。
+
+Go 版 go-api 容器在步骤②已启动（`go-api:latest`，端口 8001），接口契约与 Python 版一致：
+
+```bash
+curl http://localhost:8001/health
+curl "http://localhost:8001/transactions?customer_id=1&limit=3"
+curl http://localhost:8001/customers/1/full-profile
+```
+
+单独重启：`docker compose -f deploy/docker-compose.yml restart go-api`。
 
 ---
 
@@ -221,7 +233,8 @@ curl http://localhost:8000/customers/C12050/full-profile   # 实时统计 + 离�
 | [shared/](shared/) | 共享模块：structlog + 标准 logging 桥接配置，供 api/batch/airflow 复用 | — |
 | [clickhouse/](clickhouse/) | 离线 OLAP 建表 DDL（11 张） | [clickhouse/ddl/](clickhouse/ddl/) |
 | [starrocks/](starrocks/) | 实时 OLAP 建表 DDL（聚合表 + 迟到明细表） | [starrocks/README.md](starrocks/README.md) |
-| [api/](api/) | 查询服务：双数据源路由（StarRocks / ClickHouse） | [api/README.md](api/README.md) |
+| [api/](api/) | 查询服务（Python）：双数据源路由（StarRocks / ClickHouse） | [api/README.md](api/README.md) |
+| [go-api/](go-api/) | 查询服务（Go）：与 api 接口契约一致，Chi + sqlx + distroless 容器化 | [go-api/README.md](go-api/README.md) |
 | [deploy/](deploy/) | Docker Compose 一键环境 | [deploy/README.md](deploy/README.md) |
 | [docs/](docs/) | 架构说明、分阶段 checklist、故障排查 | [docs/architecture.md](docs/architecture.md) |
 
@@ -263,7 +276,4 @@ curl http://localhost:8000/customers/C12050/full-profile   # 实时统计 + 离�
 | V1 | 实时主链路（Generator→Kafka→Flink→StarRocks→FastAPI） | ✅ 完成 |
 | V2 | 离线分层 + 维表打宽 + Flink 进阶（Watermark / Checkpoint / 窗口），演进为 Lambda 双引擎 | ✅ 完成 |
 | V3 | 工程化 + Airflow 调度（YAML 动态 DAG + 每日造数 + 分层跑批，已接入 generator 每日演进） | ✅ 完成 |
-| V4 | 数据质量模块（独立 DQ 规则 + 质量报告） | 规划中 |
-| V5 | 风险模型（特征工程 → 训练 → Flink 实时评分） | 规划中 |
-| V6 | Cloud（对象存储迁移 + CI/CD） | 规划中 |
-| V7 | Go 并行实现 generator / API（高并发） | 规划中 |
+| V4 | Go 重写查询 API（高并发，接口契约与 Python 版一致） | ✅ 完成 |
